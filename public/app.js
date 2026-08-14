@@ -68,9 +68,70 @@
       banner.hidden = true
     }
 
+    renderUpdate()
     renderService()
     renderRepo()
   }
+
+  // ── 内置更新 ──────────────────────────────────────────
+  function renderUpdate() {
+    const up = st.update || {}
+    const pill = $('updatePill')
+    if (up.available && !up.installing) {
+      pill.hidden = false
+      pill.classList.remove('installing')
+      $('updatePillText').textContent = `新版本 ${up.version} · 更新`
+    } else if (up.installing) {
+      pill.hidden = true
+      const bar = $('updateProgress')
+      bar.hidden = false
+      const p = up.progress ?? 0
+      $('updateProgressBar').style.width = `${p}%`
+      $('updateMsg').textContent = up.progress >= 99 ? '解压并切换中…' : `下载更新 ${p}%`
+    } else {
+      pill.hidden = true
+      $('updateProgress').hidden = true
+    }
+    if (up.mode) {
+      $('upMode').textContent = { git: 'git 检出', app: 'macOS App', portable: '便携包', dev: '开发运行' }[up.mode] || up.mode
+      $('upVersion').textContent = st.version || '—'
+    }
+    if (!up.installing && up.message && !up.available) {
+      $('updateMsg').textContent = up.message
+      $('updateMsg').className = 'update-msg' + (up.error ? ' err' : ' ok')
+    }
+  }
+
+  function updatePillClick() {
+    const up = st.update || {}
+    if (!up.available || up.installing) return
+    if (!confirm(`发现新版本 ${up.version}(当前 ${st.version})\n\n点击确定即下载并安装,完成后启动器自动重启(dsh web 服务不受影响)。`)) return
+    postJson('/api/update', { action: 'apply' }).then((r) => {
+      if (r.ok === false && r.error) toast(`更新失败:${r.error}`, 'err')
+    }).catch((err) => toast(`更新请求失败:${err.message}`, 'err'))
+  }
+
+  $('updatePill').addEventListener('click', updatePillClick)
+
+  $('btnCheckUpdate').addEventListener('click', async () => {
+    const msg = $('updateMsg')
+    msg.className = 'update-msg'
+    msg.textContent = '检查中…'
+    try {
+      const r = await postJson('/api/update', { action: 'check' })
+      const up = r.update || {}
+      if (up.available) {
+        msg.className = 'update-msg ok'
+        msg.textContent = `发现新版本 ${up.version} — 点击顶部横幅一键更新`
+      } else {
+        msg.className = 'update-msg' + (up.error ? ' err' : ' ok')
+        msg.textContent = up.message || (up.error ? `检查失败:${up.error}` : '已是最新版本')
+      }
+    } catch (err) {
+      msg.className = 'update-msg err'
+      msg.textContent = `检查失败:${err.message}`
+    }
+  })
 
   function defaultUrl() {
     return `http://${config.host || '127.0.0.1'}:${String(config.port || 3080)}/`
@@ -244,6 +305,7 @@
     $('setBuildArgs').value = config.buildArgs || ''
     $('setOpen').checked = !!config.openBrowser
     $('setAutostart').checked = !!config.autostart
+    $('setAutoUpdate').checked = config.autoUpdateCheck !== false
   }
 
   $('btnSaveSettings').addEventListener('click', async () => {
@@ -255,6 +317,7 @@
       buildArgs: $('setBuildArgs').value.trim(),
       openBrowser: $('setOpen').checked,
       autostart: $('setAutostart').checked,
+      autoUpdateCheck: $('setAutoUpdate').checked,
     }
     try {
       const r = await postJson('/api/config', patch)

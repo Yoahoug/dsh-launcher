@@ -19,6 +19,7 @@ import {
 } from './process.mjs'
 import * as repo from './repo.mjs'
 import { installIfNeeded, runBuild } from './build.mjs'
+import * as updater from './updater.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const PUBLIC = join(ROOT, 'public')
@@ -61,6 +62,55 @@ async function checkTools() {
   return { pnpm, git }
 }
 let tools = { pnpm: null, git: null }
+
+// ── 内置更新(类 cc-switch:检查 GitHub Releases → 下载 → 切换 → 重启) ─────
+
+function setUpdate(patch) {
+  setState({ update: { ...state.update, ...patch } })
+}
+
+async function runUpdateCheck() {
+  if (state.update.checking) return
+  setUpdate({ checking: true, error: null })
+  const r = await updater.checkForUpdate()
+  setUpdate({
+    checking: false,
+    mode: r.mode,
+    available: Boolean(r.available),
+    version: r.version ?? null,
+    url: r.url ?? null,
+    size: r.size ?? null,
+    notes: r.notes ?? null,
+    message: r.message ?? null,
+    error: r.error ?? null,
+  })
+  if (r.available) {
+    log('launcher', `发现新版本 ${r.version}(当前 ${LAUNCHER_VERSION})— 控制台顶部可一键更新`, 'ok')
+  } else if (r.message && r.mode !== 'git') {
+    log('launcher', `更新检查:${r.message}`)
+  }
+  return r
+}
+
+async function runUpdateApply() {
+  if (!state.update.available) return { ok: false, reason: 'no-update' }
+  if (state.update.installing) return { ok: false, reason: 'busy' }
+  setUpdate({ installing: true, progress: 0, error: null })
+  const info = {
+    version: state.update.version,
+    url: state.update.url,
+    size: state.update.size,
+    current: LAUNCHER_VERSION,
+  }
+  const r = await updater.downloadAndApply(info, { onProgress: (p) => setUpdate({ progress: p }) })
+  if (!r.ok) {
+    setUpdate({ installing: false, error: r.error, message: r.error })
+    return { ok: false, error: r.error }
+  }
+  // 旧进程退出:不触发 SIGTERM 处理器(避免停止托管中的 dsh web),新实例会召回它们
+  setTimeout(() => process.exit(0), 300)
+  return { ok: true, version: r.version }
+}
 
 // ── 工具函数 ─────────────────────────────────────────────
 
@@ -498,6 +548,7 @@ function validateConfig(patch) {
     if (Number.isInteger(n) && n >= 5000) out.readyTimeoutMs = n
   }
   if ('openBrowser' in patch) out.openBrowser = Boolean(patch.openBrowser)
+  if ('autoUpdateCheck' in patch) out.autoUpdateCheck = Boolean(patch.autoUpdateCheck)
   if ('autostart' in patch) out.autostart = Boolean(patch.autostart)
   return { ok: true, patch: out }
 }
@@ -529,6 +580,10 @@ function handleApi(req, res, pathname) {
       return true
     }
     if (pathname === '/api/health') { sendJson(res, { ok: true, pid: process.pid, version: LAUNCHER_VERSION }); return true }
+    if (pathname === '/api/update') {
+      sendJson(res, { ok: true, update: state.update, version: LAUNCHER_VERSION, mode: updater.installMode() })
+      return true
+    }
     return false
   }
 
@@ -542,6 +597,22 @@ function handleApi(req, res, pathname) {
         if (!fn) { sendJson(res, { ok: false, reason: `未知动作 ${body.action}` }, 400); return }
         const r = await fn()
         sendJson(res, { ok: r?.ok !== false, reason: r?.reason, aborted: r?.aborted })
+      })()
+      return true
+    }
+    if (pathname === '/api/update') {
+      void (async () => {
+        const body = await readBody(req)
+        const action = body?.action
+        if (action === 'check') {
+          const r = await runUpdateCheck()
+          sendJson(res, { ok: true, update: state.update, result: r })
+        } else if (action === 'apply') {
+          const r = await runUpdateApply()
+          sendJson(res, { ok: r.ok !== false, reason: r.reason, error: r.error, version: r.version })
+        } else {
+          sendJson(res, { ok: false, reason: '未知动作,用 check / apply' }, 400)
+        }
       })()
       return true
     }
@@ -625,6 +696,21 @@ async function main() {
   await reconcile()
   await refreshRepoStatus({ logSync: true })
 
+  // 内置更新:记录安装形态;打包形态且开启自动检查时,启动即查 + 每 6h 复查
+  setUpdate({ mode: updater.installMode() })
+  if (updater.installMode() === 'git') {
+    log('launcher', '运行形态:git 检出 — 代码更新请用「更新并构建」(内置更新仅面向打包安装)')
+  } else {
+    log('launcher', `运行形态:${updater.installMode()} · 当前版本 v${LAUNCHER_VERSION}`)
+  }
+  if (loadConfig().autoUpdateCheck) {
+    void runUpdateCheck()
+    const updTimer = setInterval(() => {
+      if (loadConfig().autoUpdateCheck) void runUpdateCheck()
+    }, 6 * 3600 * 1000)
+    updTimer.unref()
+  }
+
   // 周期刷新仓库状态 + 看门狗(30s)
   repoTimer = setInterval(() => {
     void refreshRepoStatus()
@@ -656,6 +742,15 @@ async function main() {
     }
     process.exit(1)
   })
+
+  // 内置更新重启:旧实例仍在退出中(占着 3090),等它释放(≤5s)再监听
+  if (process.env.DSH_LAUNCHER_UPDATED_FROM) {
+    log('launcher', `更新重启中(来自 v${process.env.DSH_LAUNCHER_UPDATED_FROM}),等待旧实例释放端口…`)
+    for (let i = 0; i < 50; i++) {
+      if (!(await probePort(LAUNCHER_PORT))) break
+      await new Promise((r) => setTimeout(r, 100))
+    }
+  }
 
   server.listen(LAUNCHER_PORT, LAUNCHER_HOST, () => {
     log('launcher', `控制台服务就绪 → http://${LAUNCHER_HOST}:${LAUNCHER_PORT}/`, 'ok')

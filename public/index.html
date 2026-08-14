@@ -17,6 +17,10 @@
       <div class="brand">dsh-launcher<small>DeepSeek Harness 开发启动器 · 控制台</small></div>
     </div>
     <div class="spacer"></div>
+    <button class="update-pill" id="updatePill" hidden>
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+      <span id="updatePillText">新版本</span>
+    </button>
     <span class="badge" id="modeBadge" hidden>标准模式</span>
     <span class="status-pill idle" id="statusPill"><span class="dot"></span><span id="statusText">空闲</span></span>
     <button class="btn-open" id="btnOpen">
@@ -119,6 +123,16 @@
         <label class="checkline"><input type="checkbox" id="setOpen"> 就绪后自动打开主界面</label>
         <label class="checkline"><input type="checkbox" id="setAutostart"> 开机自启(LaunchAgent,登录后常驻不开浏览器)</label>
       </div>
+    </div>
+    <div class="update-box" id="updateBox">
+      <div class="update-title">启动器更新</div>
+      <div class="update-meta">版本 <span class="mono" id="upVersion">—</span> · 形态 <span class="mono" id="upMode">—</span></div>
+      <div class="update-actions">
+        <button class="btn-sec up" id="btnCheckUpdate">检查更新</button>
+        <label class="checkline"><input type="checkbox" id="setAutoUpdate"> 自动检查更新</label>
+        <span class="update-msg" id="updateMsg"></span>
+      </div>
+      <div class="update-progress" id="updateProgress" hidden><div class="progress-bar" id="updateProgressBar"></div></div>
     </div>
     <div class="settings-foot">
       <span class="settings-msg" id="settingsMsg"></span>

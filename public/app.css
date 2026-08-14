@@ -153,7 +153,39 @@ body {
 }
 .error-close:hover { opacity: 1; }
 /* hidden 属性优先于各组件自身的 display(避免空横幅/空标签外露) */
-.error-banner[hidden], .tag[hidden], .badge[hidden] { display: none; }
+.error-banner[hidden], .tag[hidden], .badge[hidden], .update-pill[hidden] { display: none; }
+
+/* ── 更新横幅 ─────────────────────────── */
+.update-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--primary-grad); color: #fff;
+  border: none; border-radius: 999px; padding: 5px 13px;
+  font-size: 12.5px; font-weight: 600; cursor: pointer;
+  box-shadow: 0 3px 10px rgba(77,107,254,.35);
+  transition: transform .12s, filter .15s;
+  white-space: nowrap;
+}
+.update-pill:hover { transform: translateY(-1px); filter: brightness(1.08); }
+.update-pill.installing { opacity: .8; cursor: progress; }
+.update-pill .spin { animation: rot 1.1s linear infinite; }
+@keyframes rot { to { transform: rotate(360deg); } }
+
+/* ── 设置里的更新区 ───────────────────── */
+.update-box {
+  margin: 0 16px 14px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: #FBFCFE; padding: 12px 14px;
+}
+.update-title { font-size: 12px; font-weight: 700; color: var(--text-2); margin-bottom: 4px; }
+.update-meta { font-size: 12px; color: var(--text-3); margin-bottom: 8px; }
+.update-meta .mono { color: var(--text-1); font-weight: 600; }
+.update-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.update-actions .btn-sec.up { flex: none; padding: 7px 16px; }
+.update-msg { font-size: 12px; color: var(--text-3); flex: 1; min-width: 120px; }
+.update-msg.ok { color: var(--success); }
+.update-msg.err { color: var(--danger); }
+.update-progress { margin-top: 10px; height: 6px; border-radius: 999px; background: #EEF1F6; overflow: hidden; }
+.update-progress .progress-bar { height: 100%; width: 0%; border-radius: 999px; background: var(--primary-grad); animation: none; margin-left: 0; transition: width .3s; }
 
 /* ── 状态条 ───────────────────────────── */
 .status-row {
