@@ -285,6 +285,39 @@ details.settings summary:hover { color: var(--primary); }
 .settings-msg.err { color: var(--danger); }
 .btn-sec.save { flex: none; padding: 8px 22px; }
 
+/* ── 仓库构建状态提示 ──────────────────── */
+.repo-hint {
+  margin: 0 16px 12px;
+  font-size: 12px; color: var(--text-3);
+  border: 1px dashed var(--border); border-radius: var(--radius-sm);
+  padding: 8px 12px; background: #FBFCFE;
+}
+.repo-hint.ok { color: var(--success); border-color: #BBF7D0; background: var(--success-weak); }
+.repo-hint.warn { color: var(--warning); border-color: #FDE68A; background: var(--warning-weak); }
+.repo-hint.err { color: var(--danger); border-color: #FECACA; background: var(--danger-weak); }
+
+/* ── 退出启动器 ───────────────────────── */
+.foot-quit { margin-top: 8px; }
+.foot-btn {
+  border: 1px solid var(--border); background: var(--surface); color: var(--text-2);
+  border-radius: 999px; padding: 4px 14px; font-size: 12px; font-weight: 600;
+  cursor: pointer; transition: all .15s;
+}
+.foot-btn:hover { border-color: var(--danger); color: var(--danger); background: var(--danger-weak); }
+.quit-overlay {
+  position: fixed; inset: 0; z-index: 50;
+  background: rgba(15, 23, 42, .35);
+  display: flex; align-items: center; justify-content: center;
+}
+.quit-overlay[hidden] { display: none; }
+.quit-card {
+  background: var(--surface); border-radius: var(--radius);
+  box-shadow: var(--shadow-lg); padding: 28px 32px; max-width: 380px; text-align: center;
+}
+.quit-title { font-size: 16px; font-weight: 700; margin-bottom: 8px; }
+.quit-desc { font-size: 13px; color: var(--text-2); margin-bottom: 18px; line-height: 1.7; }
+.quit-card .btn-main { display: inline-flex; }
+
 /* ── 页脚 ─────────────────────────────── */
 .foot {
   margin-top: 16px; text-align: center;

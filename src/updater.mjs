@@ -192,6 +192,19 @@ export async function downloadAndApply(info, { onProgress = () => {} } = {}) {
     // 4. 移入 apps/ 目录(保留旧版本便于回滚)
     rmSync(targetVerDir, { recursive: true, force: true })
     renameSync(verDir, targetVerDir)
+    // 4b. 若更新包含原生启动器二进制且当前是 .app 安装,一并替换
+    //     (C 启动器在 spawn 后即退出,更新时它并未运行,替换安全;旧二进制保留为 .prev)
+    if (mode === 'app') {
+      const newBin = join(payloadDir, 'dsh-launcher.app', 'Contents', 'MacOS', 'dsh-launcher')
+      const curBin = join(pkgRoot, '..', 'MacOS', 'dsh-launcher')
+      if (existsSync(newBin) && existsSync(curBin)) {
+        const prev = `${curBin}.prev`
+        rmSync(prev, { force: true })
+        renameSync(curBin, prev)
+        renameSync(newBin, curBin)
+        log('launcher', '原生启动器二进制已同步更新(旧版保留为 .prev)', 'ok')
+      }
+    }
     // 5. 原子切换 current 指针
     const ljPath = join(pkgRoot, 'launcher.json')
     const ljTmp = join(pkgRoot, 'launcher.json.tmp')

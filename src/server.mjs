@@ -20,6 +20,7 @@ import {
 import * as repo from './repo.mjs'
 import { installIfNeeded, runBuild } from './build.mjs'
 import * as updater from './updater.mjs'
+import { resolveTools, toolEnv } from './tools.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const PUBLIC = join(ROOT, 'public')
@@ -45,23 +46,27 @@ function nodeInDshRange() {
 }
 
 async function checkTools() {
+  const resolved = resolveTools()
+  const env = toolEnv(resolved)
   const pnpm = await new Promise((resolve) => {
-    execFile('pnpm', ['-v'], { timeout: 15000 }, (err, stdout) => {
+    if (!resolved.pnpm) return resolve(null)
+    execFile(resolved.pnpm, ['-v'], { timeout: 15000, env }, (err, stdout) => {
       if (err) resolve(null)
       else resolve(stdout.trim())
     })
   })
   const git = await new Promise((resolve) => {
-    execFile('git', ['--version'], { timeout: 10000 }, (err, stdout) => {
+    if (!resolved.git) return resolve(null)
+    execFile(resolved.git, ['--version'], { timeout: 10000, env }, (err, stdout) => {
       if (err) resolve(null)
       else resolve(stdout.trim())
     })
   })
   if (!pnpm) envWarnings.push('未找到 pnpm,请先安装(brew install pnpm,或 corepack enable);「启动/开发模式/更新并构建」需要它')
   if (!git) envWarnings.push('未找到 git,「更新并构建」不可用')
-  return { pnpm, git }
+  return { pnpm, git, resolved }
 }
-let tools = { pnpm: null, git: null }
+let tools = { pnpm: null, git: null, resolved: null }
 
 // ── 内置更新(类 cc-switch:检查 GitHub Releases → 下载 → 切换 → 重启) ─────
 
@@ -121,6 +126,16 @@ function psCommand(pid) {
       resolve(err ? '' : stdout.trim())
     })
   })
+}
+
+/** 仓库前端 dist 是否已构建(决定能否直接「启动」,无需先「更新并构建」)。 */
+function distBuiltCheck(repoPath) {
+  if (!repoPath) return null
+  try {
+    return existsSync(join(repoPath, 'apps', 'web', 'dist', 'index.html'))
+  } catch {
+    return null
+  }
 }
 
 /** 端口占用者诊断。 */
@@ -455,6 +470,14 @@ async function actionStop() {
   return { ok: true }
 }
 
+/** 退出启动器本身:停止全部托管进程(dsh web / dev:web / 流程)后退出服务。 */
+async function quitLauncher(reason) {
+  log('launcher', `退出启动器:${reason} — 停止全部托管进程并退出服务`)
+  await actionStop()
+  // 稍等让 HTTP 响应先返回,再退出(等效优雅关机)
+  setTimeout(() => process.exit(0), 200)
+}
+
 /** 动作分发。 */
 const ACTIONS = {
   start: () => actionStart('normal'),
@@ -463,6 +486,7 @@ const ACTIONS = {
   stop: () => actionStop(),
   rebuild: () => actionRebuild(),
   clear: () => { clearRing(); return Promise.resolve({ ok: true }) },
+  quit: () => quitLauncher('控制台「退出启动器」'),
 }
 
 // ── HTTP 服务 ────────────────────────────────────────────
@@ -576,7 +600,15 @@ function handleApi(req, res, pathname) {
     }
     if (pathname === '/api/config') {
       const cfg = loadConfig()
-      sendJson(res, { ok: true, config: cfg, usable: repoUsable(cfg.repoPath), tools, warnings: envWarnings, launcher: { pid: process.pid, version: LAUNCHER_VERSION, port: LAUNCHER_PORT } })
+      sendJson(res, {
+        ok: true,
+        config: cfg,
+        usable: repoUsable(cfg.repoPath),
+        distBuilt: distBuiltCheck(cfg.repoPath),
+        tools,
+        warnings: envWarnings,
+        launcher: { pid: process.pid, version: LAUNCHER_VERSION, port: LAUNCHER_PORT },
+      })
       return true
     }
     if (pathname === '/api/health') { sendJson(res, { ok: true, pid: process.pid, version: LAUNCHER_VERSION }); return true }
@@ -686,8 +718,8 @@ async function main() {
   ensureDirs()
   checkNodeVersion()
   tools = await checkTools()
-  if (tools.pnpm) log('launcher', `pnpm ${tools.pnpm} 就绪`)
-  if (tools.git) log('launcher', `${tools.git} 就绪`)
+  if (tools.pnpm) log('launcher', `pnpm ${tools.pnpm} 就绪(${tools.resolved?.pnpm ?? 'PATH'})`)
+  if (tools.git) log('launcher', `${tools.git} 就绪(${tools.resolved?.git ?? 'PATH'})`)
   if (envWarnings.length) envWarnings.forEach((w) => log('launcher', w, 'warn'))
 
   writePid(PID_FILE, process.pid)

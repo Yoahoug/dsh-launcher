@@ -5,6 +5,7 @@ import { createInterface } from 'node:readline'
 import { readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { WEB_PID_FILE, DEV_PID_FILE } from './config.mjs'
 import { log } from './log.mjs'
+import { toolEnv } from './tools.mjs'
 
 /** 就绪行正则(与 dsh 仓库测试 apps/web/tests 同款)。 */
 export const READY_RE = /dsh web: (http:\/\/[^\s]+)/
@@ -67,7 +68,7 @@ function attach(child, src, handlers = {}) {
 export function spawnWeb({ cwd, port, host = '127.0.0.1', dshHome = '', onLine, onReady, onExit }) {
   const args = ['dsh', 'web', '--port', String(port)]
   if (host && host !== '127.0.0.1') args.push('--host', host)
-  const env = { ...process.env }
+  const env = toolEnv()
   if (dshHome) env.DSH_HOME = dshHome
   const child = spawn('pnpm', args, { cwd, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
   children.web = child
@@ -80,7 +81,7 @@ export function spawnWeb({ cwd, port, host = '127.0.0.1', dshHome = '', onLine, 
 /** 开发模式:HMR watcher(pnpm run dev:web → tsx scripts/dev-web.ts --poll)。 */
 export function spawnDevWeb(cwd, { onLine, onExit } = {}) {
   const child = spawn('pnpm', ['run', 'dev:web'], {
-    cwd, env: { ...process.env }, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
+    cwd, env: toolEnv(), detached: true, stdio: ['ignore', 'pipe', 'pipe'],
   })
   children.dev = child
   writePid(DEV_PID_FILE, child.pid)

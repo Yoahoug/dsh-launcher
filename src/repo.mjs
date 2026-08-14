@@ -5,11 +5,12 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { log } from './log.mjs'
 import { children } from './process.mjs'
+import { toolEnv } from './tools.mjs'
 
 /** 运行 git 命令,流式输出到日志;返回 { code, lines, tail }。 */
 export function runGit(cwd, args, { label = `git ${args[0] ?? ''}` } = {}) {
   return new Promise((resolve) => {
-    const child = spawn('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn('git', args, { cwd, env: toolEnv(), stdio: ['ignore', 'pipe', 'pipe'] })
     children.op = child
     const lines = []
     let tail = []
@@ -36,7 +37,7 @@ export function runGit(cwd, args, { label = `git ${args[0] ?? ''}` } = {}) {
 /** 执行 git 并静默收集输出(状态查询类,不打扰日志)。 */
 function runGitQuiet(cwd, args) {
   return new Promise((resolve) => {
-    const child = spawn('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn('git', args, { cwd, env: toolEnv(), stdio: ['ignore', 'pipe', 'pipe'] })
     let out = ''
     child.stdout.on('data', (b) => { out += b })
     child.on('error', () => resolve({ code: -1, out: '' }))

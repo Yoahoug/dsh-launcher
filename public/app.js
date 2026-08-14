@@ -137,6 +137,36 @@
     return `http://${config.host || '127.0.0.1'}:${String(config.port || 3080)}/`
   }
 
+  // ── 仓库构建状态提示 ──────────────────────────────────
+  function updateRepoHint(distBuilt, usable) {
+    const hint = $('repoHint')
+    if (!usable || !usable.ok) {
+      hint.className = 'repo-hint err'
+      hint.textContent = usable && usable.reason ? `仓库不可用:${usable.reason}` : '仓库路径未配置'
+      return
+    }
+    if (distBuilt === true) {
+      hint.className = 'repo-hint ok'
+      hint.textContent = '✓ 前端已构建,可直接点「启动」,无需先构建'
+    } else {
+      hint.className = 'repo-hint warn'
+      hint.textContent = '⚠ 前端 dist 未构建 — 首次请先点「更新并构建」,之后即可直接「启动」'
+    }
+  }
+
+  // ── 退出启动器 ────────────────────────────────────────
+  $('btnQuit').addEventListener('click', async () => {
+    if (!confirm('退出启动器?\n\n将停止 dsh web / dev:web 等全部托管进程,并关闭启动器服务本身。')) return
+    try {
+      await postJson('/api/action', { action: 'quit' })
+    } catch { /* 服务可能已退出,忽略 */ }
+    $('quitOverlay').hidden = false
+  })
+  $('btnReopen').addEventListener('click', () => {
+    window.location.reload()
+    // 若服务已重启,reload 会重新连上;否则提示
+  })
+
   function uptimeText() {
     if (st.state !== 'running' || !st.startedAt) return '未运行'
     const sec = Math.floor((Date.now() - st.startedAt) / 1000)
@@ -326,6 +356,10 @@
         toast('设置已保存 ✓', 'ok')
         fillSettings()
         renderState()
+        // 仓库路径可能变了,重新拉构建状态
+        fetch('/api/config').then((x) => x.json()).then((x) => {
+          if (x.ok) updateRepoHint(x.distBuilt, x.usable)
+        }).catch(() => {})
       } else {
         toast(`保存失败:${r.reason}`, 'err')
       }
@@ -343,7 +377,7 @@
         fetch('/api/state').then((r) => r.json()),
         fetch('/api/logs?since=0').then((r) => r.json()),
       ])
-      if (cfgRes.ok) { config = cfgRes.config; fillSettings() }
+      if (cfgRes.ok) { config = cfgRes.config; fillSettings(); updateRepoHint(cfgRes.distBuilt, cfgRes.usable) }
       if (stRes.ok) { st = stRes.state; renderState() }
       if (logRes.ok) {
         buffer = logRes.logs || []
