@@ -1,0 +1,13 @@
+{
+  "name": "dsh-launcher",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Pure launcher for DeepSeek Harness dev workflow: source launch, update+build, HMR dev mode, background daemon, light console UI.",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "scripts": {
+    "start": "node src/server.mjs"
+  }
+}
