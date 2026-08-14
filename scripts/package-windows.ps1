@@ -1,4 +1,4 @@
-# 组装 dsh-launcher Windows 便携包(CI 用)
+﻿# 组装 dsh-launcher Windows 便携包(CI 用)
 # 用法:powershell -File scripts/package-windows.ps1 -Version 0.2.0 -OutDir build -Exe build\dsh-launcher.exe
 param(
   [Parameter(Mandatory = $true)][string]$Version,
