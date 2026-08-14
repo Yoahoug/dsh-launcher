@@ -4,7 +4,7 @@
 import { createServer } from 'node:http'
 import { execFile, spawn } from 'node:child_process'
 import { readFileSync, existsSync } from 'node:fs'
-import { join, extname } from 'node:path'
+import { join, extname, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   PID_FILE, STATE_FILE, WEB_PID_FILE, DEV_PID_FILE,
@@ -20,7 +20,8 @@ import {
 import * as repo from './repo.mjs'
 import { installIfNeeded, runBuild } from './build.mjs'
 import * as updater from './updater.mjs'
-import { resolveTools, toolEnv } from './tools.mjs'
+import { resolveTools, toolEnv, setDshNodeDir } from './tools.mjs'
+import { resolveDshNode, installDshNode, nodeInRange, NODE_RANGE_MSG } from './nodeenv.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const PUBLIC = join(ROOT, 'public')
@@ -28,21 +29,32 @@ const SCRIPTS = join(ROOT, 'scripts')
 
 // ── 启动自检 ─────────────────────────────────────────────
 
-const NODE_MIN = [22, 19]
 const envWarnings = []
 
-function checkNodeVersion() {
-  const [maj, min] = process.versions.node.split('.').map(Number)
-  const inRange = (maj > NODE_MIN[0] && maj !== 23) || (maj === NODE_MIN[0] && min >= NODE_MIN[1]) || maj >= 24
-  if (!inRange) {
-    envWarnings.push(`Node ${process.versions.node} 不在 dsh 要求的版本范围(^${NODE_MIN.join('.')} || >=24)内:开发模式(dev:web / tsx / tsdown)可能不可用,建议用 nvm 切换 Node 22 或 24`)
-  }
+/** 当前 Node 是否符合 dsh engines(^22.19 || >=24)。 */
+function nodeInDshRange() {
+  return nodeInRange(process.versions.node)
 }
 
-/** Node 版本是否符合 dsh engines(^22.19 || >=24)。 */
-function nodeInDshRange() {
-  const [maj, min] = process.versions.node.split('.').map(Number)
-  return (maj === 22 && min >= 19) || maj >= 24
+/** 兼容 Node 解析结果(启动时填充):{ path, version, source } | null。 */
+let dshNode = null
+
+async function checkNodeVersion() {
+  dshNode = await resolveDshNode()
+  if (nodeInDshRange()) {
+    // 当前 Node 在范围内:直接用,无警告
+    setDshNodeDir(null)
+  } else if (dshNode) {
+    // 当前 Node 不合规,但系统里有兼容 Node:自动选用
+    setDshNodeDir(dirname(dshNode.path))
+  } else {
+    setDshNodeDir(null)
+    envWarnings.push(
+      `当前 Node ${process.versions.node} 不在 dsh 要求的版本范围(${NODE_RANGE_MSG})内,且未找到系统里已安装的兼容 Node;`
+      + `开发模式(dev:web / tsx / tsdown)与「更新并构建 / 重建并重启」将不可用(tsdown 会崩溃)。`
+      + `可在控制台「设置 → Node 运行时」一键安装 Node 24 LTS,或终端执行:brew install node@24 / nvm install 24`,
+    )
+  }
 }
 
 async function checkTools() {
@@ -284,6 +296,46 @@ function ensureRepo(cfg) {
   return true
 }
 
+/**
+ * 开发模式 / 构建类动作需要 dsh 兼容 Node(tsx/tsdown 在不兼容版本下崩溃)。
+ * 合规 → true;不合规但找到兼容 Node → 已自动选用,true;否则 fail 并返回 false。
+ */
+function requireDshNode(actionLabel) {
+  if (nodeInDshRange() || dshNode) return true
+  fail(
+    `${actionLabel}需要 Node ${NODE_RANGE_MSG}`,
+    `当前 Node ${process.versions.node} 不在 dsh 支持范围,tsx/tsdown 会崩溃(import-without-cache 的 load hook 报错)。`
+    + `请在「设置 → Node 运行时」一键安装 Node 24 LTS,或在终端执行:brew install node@24 / nvm install 24`,
+  )
+  return false
+}
+
+/** 一键安装 Node 24 LTS(下载官方二进制到托管目录并自动选用)。 */
+async function actionInstallNode() {
+  if (state.busy) return { ok: false, reason: 'busy' }
+  if (nodeInDshRange() || dshNode) {
+    log('launcher', `Node 运行时已就绪(${dshNode ? `自动选用 ${dshNode.version}` : process.versions.node}),无需安装`)
+    return { ok: true }
+  }
+  const myEpoch = epoch
+  setState({ busy: true, error: null, state: STATES.STARTING, phase: '安装 Node 24 LTS…' })
+  const r = await installDshNode({
+    onStage: (p) => { if (epoch === myEpoch) setState({ phase: p }) },
+    onLine: (l) => log('launcher', l),
+  })
+  if (epoch !== myEpoch) return { ok: false, aborted: true }
+  if (!r.ok) {
+    setState({ busy: false })
+    fail('Node 安装失败', r.error)
+    return { ok: false, error: r.error }
+  }
+  dshNode = await resolveDshNode()
+  setDshNodeDir(dshNode ? dirname(dshNode.path) : null)
+  setState({ busy: false, state: STATES.IDLE, phase: '' })
+  log('launcher', `Node ${r.version} 安装完成并已自动选用 → ${r.path}`, 'ok')
+  return { ok: true }
+}
+
 async function actionStart(mode = 'normal') {
   const cfg = loadConfig()
   if (!ensureRepo(cfg)) return { ok: false }
@@ -323,6 +375,7 @@ async function actionDev() {
   const cfg = loadConfig()
   if (!ensureRepo(cfg)) return { ok: false }
   if (state.busy) return { ok: false, reason: 'busy' }
+  if (!requireDshNode('开发模式')) return { ok: false, reason: 'node-unsupported' }
   if (state.state === STATES.RUNNING && state.webPid && isAlive(state.webPid)) {
     log('launcher', 'dsh web 已在运行;若需要热更,请先「停止」再进入开发模式')
     openBrowser(state.url || defaultUrl(cfg))
@@ -350,11 +403,7 @@ async function actionDev() {
     onExit: (code) => {
       if (state.mode === 'dev' && epoch === myEpoch && code !== null) {
         setState({ devPid: null })
-        if (!nodeInDshRange()) {
-          log('launcher', `dev:web 已退出(码 ${code})— 当前 Node ${process.versions.node} 与 tsx/tsdown 不兼容(需 ^22.19 || >=24);HMR 热更不可用,建议切换 Node 版本后重进开发模式`, 'err')
-        } else {
-          log('launcher', `dev:web 已退出(码 ${code})— 热更失效,可点「重建并重启」恢复`, 'warn')
-        }
+        log('launcher', `dev:web 已退出(码 ${code})— 热更失效,可点「重建并重启」恢复`, 'warn')
       }
     },
   })
@@ -368,6 +417,7 @@ async function actionUpdate() {
   const cfg = loadConfig()
   if (!ensureRepo(cfg)) return { ok: false }
   if (state.busy) return { ok: false, reason: 'busy' }
+  if (!requireDshNode('更新并构建')) return { ok: false, reason: 'node-unsupported' }
   if (!tools.git) { fail('未找到 git', '「更新并构建」需要 git,请先安装'); return { ok: false } }
 
   const myEpoch = epoch
@@ -430,6 +480,7 @@ async function actionRebuild() {
   const cfg = loadConfig()
   if (!ensureRepo(cfg)) return { ok: false }
   if (state.busy) return { ok: false, reason: 'busy' }
+  if (!requireDshNode('重建并重启')) return { ok: false, reason: 'node-unsupported' }
   if (!tools.pnpm) { fail('未找到 pnpm', '请先安装 pnpm,然后重试'); return { ok: false } }
 
   const myEpoch = epoch
@@ -485,6 +536,7 @@ const ACTIONS = {
   update: () => actionUpdate(),
   stop: () => actionStop(),
   rebuild: () => actionRebuild(),
+  'install-node': () => actionInstallNode(),
   clear: () => { clearRing(); return Promise.resolve({ ok: true }) },
   quit: () => quitLauncher('控制台「退出启动器」'),
 }
@@ -605,7 +657,16 @@ function handleApi(req, res, pathname) {
         config: cfg,
         usable: repoUsable(cfg.repoPath),
         distBuilt: distBuiltCheck(cfg.repoPath),
-        tools,
+        tools: {
+          ...tools,
+          node: {
+            current: process.versions.node,
+            inRange: nodeInDshRange(),
+            used: dshNode ? dshNode.path : null,
+            usedVersion: dshNode ? dshNode.version : null,
+            usedSource: dshNode ? dshNode.source : null,
+          },
+        },
         warnings: envWarnings,
         launcher: { pid: process.pid, version: LAUNCHER_VERSION, port: LAUNCHER_PORT },
       })
@@ -716,8 +777,13 @@ async function reconcile() {
 
 async function main() {
   ensureDirs()
-  checkNodeVersion()
+  await checkNodeVersion()
   tools = await checkTools()
+  if (nodeInDshRange()) {
+    log('launcher', `Node ${process.versions.node} 就绪(当前进程,符合 dsh ${NODE_RANGE_MSG})`, 'ok')
+  } else if (dshNode) {
+    log('launcher', `当前 Node ${process.versions.node} 不在 dsh 范围(${NODE_RANGE_MSG}),自动选用 Node ${dshNode.version} (${dshNode.source}: ${dshNode.path})`, 'ok')
+  }
   if (tools.pnpm) log('launcher', `pnpm ${tools.pnpm} 就绪(${tools.resolved?.pnpm ?? 'PATH'})`)
   if (tools.git) log('launcher', `${tools.git} 就绪(${tools.resolved?.git ?? 'PATH'})`)
   if (envWarnings.length) envWarnings.forEach((w) => log('launcher', w, 'warn'))

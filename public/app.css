@@ -296,6 +296,24 @@ details.settings summary:hover { color: var(--primary); }
 .repo-hint.warn { color: var(--warning); border-color: #FDE68A; background: var(--warning-weak); }
 .repo-hint.err { color: var(--danger); border-color: #FECACA; background: var(--danger-weak); }
 
+/* ── Node 运行时状态 ───────────────────── */
+.node-row {
+  margin: 0 16px 12px;
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 8px 12px; background: #FBFCFE;
+}
+.node-row[hidden] { display: none; }
+.node-info { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-2); min-width: 0; }
+.node-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--text-3); }
+.node-row.ok .node-dot { background: var(--success); }
+.node-row.warn .node-dot { background: var(--warning); }
+.node-row.err .node-dot { background: var(--danger); }
+.node-row.ok .node-info { color: var(--success); }
+.node-row.err .node-info { color: var(--danger); }
+.node-row .node-path { color: var(--text-3); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.node-row .btn-sec { flex: none; }
+
 /* ── 退出启动器 ───────────────────────── */
 .foot-quit { margin-top: 8px; }
 .foot-btn {

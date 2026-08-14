@@ -67,10 +67,18 @@ export function resolveTools() {
   }
 }
 
+/** 兼容 Node(dsh 范围)的 bin 目录;由 server 启动时按 nodeenv 解析结果注入。 */
+let dshNodeDir = null
+
+/** 设置兼容 Node 的 bin 目录(null = 用当前进程 Node)。 */
+export function setDshNodeDir(dir) {
+  dshNodeDir = dir || null
+}
+
 /** 子进程环境:把工具目录注入 PATH(排在前面),确保 pnpm/git/其 shim 都能解析。 */
 export function toolEnv(tools = resolveTools()) {
   const sep = process.platform === 'win32' ? ';' : ':'
-  const extra = [tools.nodeDir, tools.pnpmDir, tools.gitDir].filter(Boolean)
+  const extra = [dshNodeDir, tools.nodeDir, tools.pnpmDir, tools.gitDir].filter(Boolean)
   const base = (process.env.PATH || '').split(sep).filter(Boolean)
   return { ...process.env, PATH: [...new Set([...extra, ...base])].join(sep) }
 }

@@ -8,10 +8,12 @@
 
   let config = { repoPath: '', port: 3080, host: '127.0.0.1' }
   let st = null // 状态快照
+  let toolsNode = null // /api/config 里的 node 信息
   let buffer = [] // 日志缓冲
   let lastId = 0
   let enabledSrc = new Set(['launcher', 'dsh web', 'dev:web', 'git', 'pnpm'])
   let paused = false
+  const NODE_RANGE_TEXT = '^22.19 || >=24'
 
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) => (
     { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
@@ -53,6 +55,8 @@
     $('btnUpdate').disabled = busy
     $('btnRebuild').disabled = busy
     $('btnStop').disabled = !busy && st.state === 'idle'
+    const installBtn = $('btnInstallNode')
+    if (installBtn) installBtn.disabled = busy || st.state === 'starting'
 
     $('progress').classList.toggle('show', busy)
     $('phase').classList.toggle('show', !!st.phase)
@@ -368,6 +372,62 @@
     }
   })
 
+  // ── Node 运行时状态 ────────────────────────────────────
+  function renderNode() {
+    const row = $('nodeRow')
+    if (!row || !toolsNode) { if (row) row.hidden = true; return }
+    row.hidden = false
+    const dot = $('nodeDot')
+    const text = $('nodeText')
+    const btn = $('btnInstallNode')
+    if (toolsNode.inRange) {
+      row.className = 'node-row ok'
+      dot.className = 'node-dot'
+      text.textContent = `Node ${toolsNode.current} 符合 dsh 要求(${toolsNode.current})`
+      btn.hidden = true
+    } else if (toolsNode.used) {
+      row.className = 'node-row ok'
+      dot.className = 'node-dot'
+      text.textContent = `当前 Node ${toolsNode.current} 不在 dsh 范围,已自动选用 Node ${toolsNode.usedVersion}`
+      const path = document.createElement('span')
+      path.className = 'node-path'
+      path.textContent = toolsNode.used
+      text.appendChild(path)
+      btn.hidden = true
+    } else {
+      row.className = 'node-row err'
+      dot.className = 'node-dot'
+      text.textContent = `Node ${toolsNode.current} 不在 dsh 范围(${NODE_RANGE_TEXT})— 开发模式 / 构建不可用`
+      btn.hidden = false
+    }
+  }
+
+  $('btnInstallNode').addEventListener('click', async () => {
+    if (!confirm('将下载官方 Node 24 LTS(约 50MB)并安装到启动器托管目录,安装后自动选用。继续?')) return
+    const btn = $('btnInstallNode')
+    btn.disabled = true
+    try {
+      const r = await postJson('/api/action', { action: 'install-node' })
+      if (r.ok === false && r.reason === 'busy') {
+        toast('上一个操作仍在进行,请稍候', 'err')
+      } else if (r.ok === false) {
+        toast('安装失败,详见日志与诊断横幅', 'err')
+      }
+      // 等安装完成后(状态离开 starting/busy)拉一次最新配置,刷新 Node 状态
+      const poll = async () => {
+        const s = await fetch('/api/state').then((x) => x.json()).catch(() => null)
+        if (s && s.ok && s.state.busy) { setTimeout(poll, 1500); return }
+        const c = await fetch('/api/config').then((x) => x.json()).catch(() => null)
+        if (c && c.ok) { toolsNode = c.tools && c.tools.node; renderNode() }
+        btn.disabled = false
+      }
+      setTimeout(poll, 1200)
+    } catch (err) {
+      toast(`安装请求失败:${err.message}`, 'err')
+      btn.disabled = false
+    }
+  })
+
   // ── 数据拉取与 SSE ────────────────────────────────────
 
   async function loadInitial() {
@@ -377,7 +437,13 @@
         fetch('/api/state').then((r) => r.json()),
         fetch('/api/logs?since=0').then((r) => r.json()),
       ])
-      if (cfgRes.ok) { config = cfgRes.config; fillSettings(); updateRepoHint(cfgRes.distBuilt, cfgRes.usable) }
+      if (cfgRes.ok) {
+        config = cfgRes.config
+        toolsNode = cfgRes.tools && cfgRes.tools.node
+        fillSettings()
+        updateRepoHint(cfgRes.distBuilt, cfgRes.usable)
+        renderNode()
+      }
       if (stRes.ok) { st = stRes.state; renderState() }
       if (logRes.ok) {
         buffer = logRes.logs || []
