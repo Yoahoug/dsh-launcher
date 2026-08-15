@@ -1,4 +1,6 @@
 // dsh-launcher · M0 场景移植集成测试(真实进程,无 mock)
+// 仅在 Unix 运行(fake pnpm 为 bash 脚本;Windows 由 supervisor win 单测覆盖)。
+#![cfg(unix)]
 // 场景1:spawn_web → 就绪行 → wait_ready → 端口确认 → 优雅停止;
 // 场景2:端口占用检测 probe_port / port_holder_pid。
 // 全部使用隔离的 DSH_LAUNCHER_STATE_DIR;env 覆盖需串行(ENV_LOCK)。
