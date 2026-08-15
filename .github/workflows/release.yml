@@ -102,14 +102,13 @@ jobs:
           KEY_PASS: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           printf '%s' "$KEY_CONTENT" > /tmp/updater.key
-          cd updater
-          for f in *.tar.gz; do
+          for f in "$PWD"/updater/*.tar.gz; do
             pnpm tauri signer sign \
               -f /tmp/updater.key \
               -p "$KEY_PASS" \
               "$f"
           done
-          ls -la
+          ls -la updater
 
       - name: Generate latest.json
         env:
