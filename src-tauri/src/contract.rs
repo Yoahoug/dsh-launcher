@@ -106,7 +106,7 @@ pub struct LogPage {
     pub sources: Vec<String>,
 }
 
-/// 设置(与 src/config.mjs DEFAULTS 对齐)。
+/// 设置(与 src/config.mjs DEFAULTS 对齐)。engine 行为,由 Node daemon 持久化。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsSnapshot {
@@ -120,6 +120,59 @@ pub struct SettingsSnapshot {
     pub build_args: String,
     pub ready_timeout_ms: u64,
     pub start_timeout_ms: u64,
+}
+
+/// 主题偏好。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+/// 关闭窗口行为。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CloseBehavior {
+    #[default]
+    Tray,
+    Quit,
+}
+
+/// 桌面偏好:仅由 Rust 持久化,不写入 Node 配置。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopPreferences {
+    pub theme: Theme,
+    pub close_behavior: CloseBehavior,
+    pub launch_on_startup: bool,
+    pub silent_startup: bool,
+    pub show_tray_icon: bool,
+    pub confirm_stop_and_quit: bool,
+}
+
+/// 桌面信息:偏好 + 首次运行状态(供 First-run 流程判定)。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DesktopSnapshot {
+    pub preferences: DesktopPreferences,
+    pub first_run_done: bool,
+    pub version: String,
+}
+
+impl Default for DesktopPreferences {
+    fn default() -> Self {
+        Self {
+            theme: Theme::default(),
+            close_behavior: CloseBehavior::default(),
+            launch_on_startup: false,
+            silent_startup: false,
+            show_tray_icon: true,
+            confirm_stop_and_quit: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -177,10 +230,12 @@ pub struct UpdateResult {
 }
 
 /// 事件名(与前端 EVENTS 常量对齐)。M2 bridge 开始使用,届时移除 allow。
-#[allow(dead_code)]
 pub const EVENT_STATE_CHANGED: &str = "app://state-changed";
-#[allow(dead_code)]
 pub const EVENT_LOG_APPENDED: &str = "app://log-appended";
+/// 托盘要求 renderer 打开某页面(取值 dashboard|logs|settings)。
+pub const EVENT_OPEN_PAGE: &str = "app://open-page";
+/// 桌面偏好已变更(Renderer 应用主题等)。
+pub const EVENT_PREFERENCES_CHANGED: &str = "app://preferences-changed";
 
 impl AppSnapshot {
     /// M1 mock:空闲快照(M2 由 bridge 提供真实数据)。

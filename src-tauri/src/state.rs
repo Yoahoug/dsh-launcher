@@ -1,9 +1,12 @@
 // dsh-launcher · 应用状态持有者
-// M2:由 bridge 轮询 Node daemon 数据驱动,AppState 只是共享数据 + 命令转发。
+// M2:由 bridge 轮询 Node daemon 数据驱动,AppState 是共享数据 + 命令转发。
+// M3:增加桌面偏好(Rust 持久化)与本地日志 ring;M4 替换为 Rust 原生核心。
 use crate::bridge::{self, BridgeSupervisor, DaemonClient, PollState};
 use crate::contract::{
-    ActionAccepted, AppSnapshot, EnvironmentSnapshot, LogPage, SettingsSnapshot, UpdateResult,
+    ActionAccepted, AppSnapshot, DesktopPreferences, DesktopSnapshot, EnvironmentSnapshot, LogPage,
+    SettingsSnapshot, UpdateResult,
 };
+use crate::preferences;
 use std::sync::{Arc, Mutex};
 
 pub struct AppState {
@@ -11,6 +14,7 @@ pub struct AppState {
     pub client: Mutex<Option<DaemonClient>>,
     pub supervisor: Mutex<Option<Arc<BridgeSupervisor>>>,
     pub boot_error: Mutex<Option<String>>,
+    pub preferences: Mutex<DesktopPreferences>,
 }
 
 impl AppState {
@@ -20,6 +24,7 @@ impl AppState {
             client: Mutex::new(None),
             supervisor: Mutex::new(None),
             boot_error: Mutex::new(None),
+            preferences: Mutex::new(preferences::load_and_migrate()),
         }
     }
 
@@ -33,6 +38,28 @@ impl AppState {
             });
         }
         snap
+    }
+
+    /// 桌面信息:偏好 + 首次运行状态。
+    pub fn desktop_snapshot(&self) -> DesktopSnapshot {
+        let settings = self.settings();
+        let first_run_done =
+            !settings.repo_path.is_empty() && std::path::Path::new(&settings.repo_path).exists();
+        DesktopSnapshot {
+            preferences: self.preferences.lock().unwrap().clone(),
+            first_run_done,
+            version: env!("CARGO_PKG_VERSION").to_string(),
+        }
+    }
+
+    /// 保存桌面偏好(Rust 侧持久化)。autostart 不再写入 Node 配置。
+    pub fn save_preferences(
+        &self,
+        prefs: &DesktopPreferences,
+    ) -> Result<DesktopPreferences, String> {
+        let saved = preferences::save_validated(prefs)?;
+        *self.preferences.lock().unwrap() = saved.clone();
+        Ok(saved)
     }
 
     /// 动作转发(bridge 白名单)。
@@ -79,10 +106,11 @@ impl AppState {
         }
     }
 
-    pub fn logs(&self, _since_id: u64) -> LogPage {
-        // M2:日志经 app://log-appended 事件流推送,查询接口保留契约占位
+    /// 日志:本地 ring 中 id > since_id 的增量 + 已知来源。
+    pub fn logs(&self, since_id: u64) -> LogPage {
+        let ring = self.poll_state.ring.lock().unwrap();
         LogPage {
-            logs: vec![],
+            logs: ring.iter().filter(|l| l.id > since_id).cloned().collect(),
             sources: vec![
                 "launcher".into(),
                 "dsh web".into(),
@@ -91,6 +119,11 @@ impl AppState {
                 "pnpm".into(),
             ],
         }
+    }
+
+    /// 清空日志 ring(不影响 daemon 侧历史)。
+    pub fn clear_logs(&self) {
+        self.poll_state.ring.lock().unwrap().clear();
     }
 
     pub fn settings(&self) -> SettingsSnapshot {

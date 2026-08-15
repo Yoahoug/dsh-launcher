@@ -44,7 +44,11 @@ pub struct PollState {
     pub settings: Arc<Mutex<SettingsSnapshot>>,
     pub environment: Arc<Mutex<EnvironmentSnapshot>>,
     pub logs_since: Arc<Mutex<u64>>,
+    /// 本地日志 ring(上限 RING_CAP),Logs 页面历史来源;M4 由 LogHub 替代。
+    pub ring: Arc<Mutex<std::collections::VecDeque<crate::contract::LogEntry>>>,
 }
+
+pub const RING_CAP: usize = 2_000;
 
 impl Default for PollState {
     fn default() -> Self {
@@ -70,6 +74,20 @@ impl Default for PollState {
                 warnings: vec![],
             })),
             logs_since: Arc::new(Mutex::new(0)),
+            ring: Arc::new(Mutex::new(std::collections::VecDeque::new())),
+        }
+    }
+}
+
+impl PollState {
+    /// 追加日志到 ring(容量上限 RING_CAP,防止长期后台内存增长)。
+    pub fn append_ring(&self, entries: Vec<crate::contract::LogEntry>) {
+        let mut ring = self.ring.lock().unwrap();
+        for e in entries {
+            ring.push_back(e);
+            while ring.len() > RING_CAP {
+                ring.pop_front();
+            }
         }
     }
 }
@@ -149,8 +167,11 @@ impl DaemonClient {
         let page: LogPage =
             serde_json::from_value(v).map_err(|e| format!("logs 契约解析失败: {e}"))?;
         if !page.logs.is_empty() {
-            *ps.logs_since.lock().unwrap() = page.logs.last().map(|l| l.id).unwrap_or(since);
-            for entry in page.logs {
+            let entries = page.logs;
+            let last_id = entries.last().map(|l| l.id).unwrap_or(since);
+            *ps.logs_since.lock().unwrap() = last_id;
+            ps.append_ring(entries.clone());
+            for entry in entries {
                 let _ = app.emit(EVENT_LOG_APPENDED, &entry);
             }
         }
@@ -561,6 +582,7 @@ pub fn start_poller(app: AppHandle, sup: Arc<BridgeSupervisor>) {
                     }
                 }
             }
+            crate::tray::refresh(&app);
             std::thread::sleep(Duration::from_millis(1000));
         }
         log::info!("bridge 轮询已停止");

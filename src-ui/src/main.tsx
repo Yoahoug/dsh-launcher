@@ -1,19 +1,11 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
+import { applyTheme } from '@/lib/theme'
 import './index.css'
 
-// 主题:跟随系统(默认);html.theme-light / .theme-dark 由设置页控制
-const mq = window.matchMedia('(prefers-color-scheme: dark)')
-function applyTheme() {
-  const html = document.documentElement
-  const forced = html.getAttribute('data-theme')
-  if (forced === 'light') html.classList.remove('dark')
-  else if (forced === 'dark') html.classList.add('dark')
-  else html.classList.toggle('dark', mq.matches)
-}
-applyTheme()
-mq.addEventListener('change', applyTheme)
+// 初始主题:跟随系统(偏好加载后由 App 覆盖)
+applyTheme('system')
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

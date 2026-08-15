@@ -4,16 +4,18 @@ import { EnvCard } from '@/components/dashboard/env-card'
 import { RepoCard } from '@/components/dashboard/repo-card'
 import { ServiceCard } from '@/components/dashboard/service-card'
 import type { AppSnapshot } from '@/types/schema'
-import type { ActionName } from '@/types/schema'
+import type { UiActionName } from '@/types/schema'
 
 export function Dashboard({
   snap,
   onAction,
   onOpenDsh,
+  onJumpLogs,
 }: {
   snap: AppSnapshot | null
-  onAction: (a: ActionName) => void
+  onAction: (a: UiActionName) => void
   onOpenDsh: () => void
+  onJumpLogs: () => void
 }) {
   if (!snap) {
     return (
@@ -24,12 +26,12 @@ export function Dashboard({
   }
   return (
     <main className="flex-1 space-y-4 overflow-y-auto p-5">
-      <ErrorCard snap={snap} />
-      <ServiceCard
+      <ErrorCard
         snap={snap}
-        onOpenDsh={onOpenDsh}
-        onStop={() => onAction('stop')}
+        onJumpLogs={onJumpLogs}
+        onRetry={() => onAction(snap.mode === 'dev' ? 'dev' : 'start')}
       />
+      <ServiceCard snap={snap} onOpenDsh={onOpenDsh} onStop={() => onAction('stop')} />
       <RepoCard
         snap={snap}
         onUpdate={() => onAction('update')}
