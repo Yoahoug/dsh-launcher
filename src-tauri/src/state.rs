@@ -290,7 +290,7 @@ impl AppState {
         }
         config::apply_patch(&serde_json::Value::Object(map))?;
         let _ = skip; // skip 与完成都标记 firstRunSkipped=true;差异仅在是否保存 repoPath
-        // 刷新仓库快照(完成路径下 repoPath 可能变化)
+                      // 刷新仓库快照(完成路径下 repoPath 可能变化)
         self.refresh_repo();
         let snap = self.snapshot();
         let _ = app.emit(EVENT_STATE_CHANGED, &snap);

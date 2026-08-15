@@ -52,10 +52,7 @@ pub fn dsh_view_geometry(
     let w = inner.width as f64 / scale;
     let top = if topbar_hidden { 0.0 } else { TITLEBAR_HEIGHT };
     let h = (inner.height as f64 / scale - top).max(0.0);
-    (
-        LogicalPosition::new(0.0, top),
-        LogicalSize::new(w, h),
-    )
+    (LogicalPosition::new(0.0, top), LogicalSize::new(w, h))
 }
 
 // ── 健康检查 / 导航策略 / 错误页(与 chat.rs 共享,单一实现) ──
