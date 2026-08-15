@@ -1,20 +1,17 @@
-// dsh-launcher · 独立 chat WebView(M3)
+// dsh-launcher · 独立 chat WebView(M3,回退路径)
 //
 // - 顶层 WebviewWindow 打开 http://127.0.0.1:<port>(本机 DeepSeek Harness Web UI,
 //   不是官方 chat.deepseek.com);不使用 iframe,不把主窗口导航到 DSH;
-// - 零 Tauri capability:chat 窗口不在任何 capability 的 windows 列表中,
-//   不配置 localhost remote capability,不授予任何 IPC;
-// - 按需创建,后续 hide/show 复用;固定本地 UDF(WebView2 User Data Folder),
-//   保持 origin 与端口稳定;
-// - 只允许精确 loopback origin 内部导航;外链用系统浏览器;拦截未知协议与 window.open;
-// - 健康检查必须确认是预期 DSH 实例(HTTP 内容标记 + 端口持有者身份),不只是端口开放;
-// - release 关闭 DevTools;默认拒绝不必要的网页权限(经 WebView2 平台 API,尽力而为);
-// - 窗口关闭默认隐藏(服务继续运行);DSH 服务死亡 → 错误页 + 自动重连。
+// - M4.1 起普通用户路径改用主窗口内子 WebView(dsh_view),本模块仅保留为
+//   可回退能力,不被 UI/托盘直接调用(不会弹出第二个 chat 窗口);
+// - 安全逻辑(健康检查/loopback 导航/错误页/urlencoding/下载不覆盖)统一收敛在
+//   dsh_view,这里只复用,不复制第二套。
 use crate::config::{self, state_dir};
+use crate::dsh_view::{dsh_health_check, error_page_url, loopback_allowed};
 use crate::services::supervisor;
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow, WebviewWindowBuilder};
@@ -78,44 +75,13 @@ impl ChatManager {
     }
 }
 
-/// 健康检查:HTTP 内容标记 + 端口持有者身份(双重确认是预期 DSH 实例)。
-pub fn dsh_health_check(port: u16, expected_pid: Option<u32>) -> bool {
-    // 1. HTTP GET / 必须 200 且包含 DSH 标记
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(std::time::Duration::from_secs(3))
-        .timeout_read(std::time::Duration::from_secs(5))
-        .build();
-    let body_ok = agent
-        .get(&format!("http://127.0.0.1:{port}/"))
-        .call()
-        .ok()
-        .and_then(|r| r.into_string().ok())
-        .is_some_and(|body| {
-            body.contains("DeepSeek Harness")
-                || body.contains("manifest.webmanifest")
-                || body.contains("dsh-web")
-        });
-    if !body_ok {
-        return false;
-    }
-    // 2. 端口持有者身份:持有者是 Launcher 托管的 dsh(pid 匹配或命令行含 dsh web)
-    if let Some(pid) = expected_pid {
-        return supervisor::port_holder_pid(port) == Some(pid)
-            || supervisor::process_cmdline(pid)
-                .is_some_and(|c| c.contains("dsh web") || c.contains("dsh"));
-    }
-    // 无托管记录(如 recall 场景):只要命令行是 dsh 即可
-    supervisor::port_holder_pid(port).is_some_and(|pid| {
-        supervisor::process_cmdline(pid).is_some_and(|c| c.contains("dsh web") || c.contains("dsh"))
-    })
-}
-
+/// 健康检查:复用 dsh_view 的统一实现(内容标记 + 端口持有者)。
 fn chat_url() -> String {
-    let s = config::load();
-    format!("http://{}:{}/", s.host, s.port)
+    crate::dsh_view::dsh_url()
 }
 
 /// 打开(或召回)chat 窗口。返回 (已显示, 是否需要等待服务)。
+/// M4.1:仅作为回退路径;普通用户路径走 dsh_view::open_dsh_workspace。
 pub fn open_chat(app: &AppHandle) -> Result<ChatStateSnapshot, String> {
     let state = app.state::<Arc<AppState>>();
     let chat = app.state::<Arc<ChatManager>>();
@@ -254,9 +220,7 @@ fn create_chat_window(app: &AppHandle) -> Result<ChatStateSnapshot, String> {
 
     // 导航策略:只允许精确 loopback origin;外链 → 系统浏览器;未知协议拦截
     builder = builder.on_navigation(move |url: &url::Url| {
-        let ok = url.scheme() == "http"
-            && matches!(url.host_str(), Some("127.0.0.1") | Some("localhost"))
-            && url.port().map(|p| p == port).unwrap_or(false);
+        let ok = loopback_allowed(url, port);
         if !ok {
             // 外链(http/https)交给系统浏览器;其它协议直接拦截
             if matches!(url.scheme(), "http" | "https") {
@@ -277,28 +241,7 @@ fn create_chat_window(app: &AppHandle) -> Result<ChatStateSnapshot, String> {
     let app4 = app.clone();
     builder = builder.on_download(move |_webview, event| {
         if let tauri::webview::DownloadEvent::Requested { destination, .. } = event {
-            let file_name = destination
-                .file_name()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_else(|| "download".to_string());
-            let downloads = app4
-                .path()
-                .download_dir()
-                .unwrap_or_else(|_| std::env::temp_dir());
-            let mut target = downloads.join(&file_name);
-            let mut i = 1;
-            while target.exists() {
-                let stem = Path::new(&file_name)
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "download".to_string());
-                let ext = Path::new(&file_name)
-                    .extension()
-                    .map(|s| format!(".{}", s.to_string_lossy()))
-                    .unwrap_or_default();
-                target = downloads.join(format!("{stem} ({i}){ext}"));
-                i += 1;
-            }
+            let target = crate::dsh_view::download_target_shared(&app4, destination);
             log::info!("chat 下载 → {}", target.display());
             *destination = target;
         }
@@ -395,40 +338,6 @@ fn start_health_watcher(app: &AppHandle) {
     });
 }
 
-/// 本地错误页(data: URL,零权限):重试 / 指引返回控制台。
-fn error_page_url(back_url: &str) -> String {
-    let html = format!(
-        r#"<!doctype html><html lang="zh-CN"><meta charset="utf-8">
-<title>DSH 连接中断</title>
-<body style="font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
-<div style="text-align:center;max-width:480px">
-<h2 style="margin:0 0 8px">DeepSeek Harness 连接中断</h2>
-<p style="color:#94a3b8;font-size:14px">服务可能已停止或正在重启。可点击下方重试;也可回到 DSH Launcher 控制台查看日志、重启服务或以系统浏览器打开。</p>
-<button onclick="location.href='{back_url}'" style="margin-top:16px;padding:10px 20px;border-radius:8px;border:none;background:#3b82f6;color:#fff;cursor:pointer">重试连接</button>
-<p style="margin-top:24px;font-size:12px;color:#64748b">返回 DSH Launcher 控制台 · 查看日志 · 在系统浏览器打开</p>
-</div></body></html>"#
-    );
-    format!("data:text/html;charset=utf-8,{}", urlencoding(&html))
-}
-
-/// 简单 URL 编码(data URL 用)。
-fn urlencoding(s: &str) -> String {
-    let mut out = String::new();
-    for b in s.as_bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b' ' => {
-                if *b == b' ' {
-                    out.push('+');
-                } else {
-                    out.push(*b as char);
-                }
-            }
-            _ => out.push_str(&format!("%{:02X}", b)),
-        }
-    }
-    out
-}
-
 /// 关闭 chat 窗口(销毁,释放资源)。
 pub fn close_chat(app: &AppHandle) {
     let chat = app.state::<Arc<ChatManager>>();
@@ -459,12 +368,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn health_check_false_when_port_closed() {
-        // 无监听端口 → 必须 false(不能只靠端口开放判定,这里端口都没开)
-        assert!(!dsh_health_check(1, None));
-    }
-
-    #[test]
     fn chat_state_serde() {
         let s = ChatStateSnapshot {
             status: ChatStatus::Ready,
@@ -475,26 +378,5 @@ mod tests {
         assert!(j.contains("\"status\":\"ready\""), "{j}");
         let back: ChatStateSnapshot = serde_json::from_str(&j).unwrap();
         assert_eq!(back, s);
-    }
-
-    #[test]
-    fn error_page_is_data_url_with_retry() {
-        let u = error_page_url("http://127.0.0.1:3080/");
-        assert!(u.starts_with("data:text/html"), "{u}");
-        // 中文按钮经 URL 编码后仍应出现(重试 = %E9%87%8D%E8%AF%95)
-        assert!(u.contains("%E9%87%8D%E8%AF%95"), "错误页必须提供重试按钮");
-        assert!(
-            !u.contains("__TAURI_INTERNALS__"),
-            "错误页不得依赖 Tauri IPC"
-        );
-        assert!(
-            u.contains("http%3A%2F%2F127.0.0.1%3A3080"),
-            "重试应指向 DSH 回环地址"
-        );
-    }
-
-    #[test]
-    fn urlencoding_basic() {
-        assert_eq!(urlencoding("a b/c"), "a+b%2Fc");
     }
 }

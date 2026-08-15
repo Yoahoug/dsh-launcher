@@ -14,6 +14,7 @@ import {
   type CloneState,
   type DesktopPreferences,
   type DesktopSnapshot,
+  type DshViewSnapshot,
   type EnvironmentSnapshot,
   type InstallationSnapshot,
   type LogEntry,
@@ -22,6 +23,7 @@ import {
   type PerfMark,
   type SettingsSnapshot,
   type UpdateCheckResult,
+  type Workspace,
 } from '@/types/schema'
 
 /** 是否运行在 Tauri WebView 内(否则进入浏览器预览 mock)。 */
@@ -47,6 +49,12 @@ export interface DesktopApi {
   openChat(): Promise<ChatStateSnapshot>
   closeChat(): Promise<void>
   getChatState(): Promise<ChatStateSnapshot>
+  // M4.1:主窗口内 DeepSeek 工作区(dsh-content 子 WebView)
+  openDshWorkspace(): Promise<DshViewSnapshot>
+  backToLauncher(): Promise<DshViewSnapshot>
+  retryDshView(): Promise<DshViewSnapshot>
+  setWorkspace(workspace: Workspace): Promise<DshViewSnapshot>
+  getDshViewState(): Promise<DshViewSnapshot>
   openRepoDirectory(): Promise<void>
   openLogDirectory(): Promise<void>
   pickDirectory(): Promise<string | null>
@@ -65,6 +73,8 @@ export interface DesktopApi {
   onOpenPage(cb: (page: PageName) => void): Promise<UnlistenFn>
   onPreferencesChanged(cb: (prefs: DesktopPreferences) => void): Promise<UnlistenFn>
   onPerfMetrics(cb: (marks: PerfMark[]) => void): Promise<UnlistenFn>
+  // M4.1:DeepSeek 工作区状态事件
+  onDshViewState(cb: (snapshot: DshViewSnapshot) => void): Promise<UnlistenFn>
 }
 
 /** Tauri 实现:command 名与 src-tauri/src/commands.rs 对齐。 */
@@ -85,6 +95,11 @@ export const desktopApi: DesktopApi = {
   openChat: () => invoke('open_chat'),
   closeChat: () => invoke('close_chat'),
   getChatState: () => invoke('get_chat_state'),
+  openDshWorkspace: () => invoke('open_dsh_workspace'),
+  backToLauncher: () => invoke('back_to_launcher'),
+  retryDshView: () => invoke('retry_dsh_view'),
+  setWorkspace: (workspace) => invoke('set_workspace', { workspace }),
+  getDshViewState: () => invoke('get_dsh_view_state'),
   openRepoDirectory: () => invoke('open_repo_directory'),
   openLogDirectory: () => invoke('open_log_directory'),
   pickDirectory: () => invoke('pick_directory'),
@@ -101,4 +116,5 @@ export const desktopApi: DesktopApi = {
   onPreferencesChanged: (cb) =>
     listen<DesktopPreferences>(EVENTS.PREFERENCES_CHANGED, (e) => cb(e.payload)),
   onPerfMetrics: (cb) => listen<PerfMark[]>(EVENTS.PERF_METRICS, (e) => cb(e.payload)),
+  onDshViewState: (cb) => listen<DshViewSnapshot>(EVENTS.DSH_VIEW_STATE, (e) => cb(e.payload)),
 }

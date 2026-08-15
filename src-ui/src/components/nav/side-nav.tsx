@@ -5,7 +5,7 @@ import type { PageName } from '@/types/schema'
 const NAV_ITEMS: { key: PageName; label: string; icon: typeof Server }[] = [
   { key: 'dashboard', label: '服务', icon: Server },
   { key: 'repo', label: '仓库与构建', icon: GitBranch },
-  { key: 'env', label: '运行环境', icon: Cpu },
+  { key: 'env', label: '工具链', icon: Cpu },
   { key: 'logs', label: '运行日志', icon: ScrollText },
   { key: 'settings', label: '设置', icon: Settings },
 ]

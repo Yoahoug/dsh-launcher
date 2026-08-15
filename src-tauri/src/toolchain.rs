@@ -9,6 +9,7 @@
 use crate::archive;
 use crate::catalog::{self, CatalogEntry};
 use crate::config::state_dir;
+use crate::contract::{ToolCheck, ToolRuntime, ToolSource};
 use crate::download;
 use crate::log_hub::LogHub;
 use crate::ops::{CancellationToken, InstalledComponent, OperationError};
@@ -449,6 +450,189 @@ pub fn resolve_pnpm(tools: &Tools) -> Option<PathBuf> {
     tools.pnpm.clone()
 }
 
+// ── 当前实际生效工具链(页面主信息:版本/来源/路径/检测状态) ──
+
+/// 当前生效平台名(macos / windows / linux,与前端约定一致)。
+pub fn platform_name() -> &'static str {
+    std::env::consts::OS
+}
+
+/// 路径是否位于 Launcher 托管目录(含旧迁移目录 state_dir()/node)。
+pub fn is_managed_path(p: &Path) -> bool {
+    let s = p.to_string_lossy().to_lowercase();
+    if s.starts_with(&toolchains_dir().to_string_lossy().to_lowercase()) {
+        return true;
+    }
+    let legacy = state_dir().join("node");
+    s.starts_with(&legacy.to_string_lossy().to_lowercase())
+}
+
+/// 来源分类:managed(托管目录)/ corepack(路径含 corepack)/ system(其余,系统安装)。
+pub fn classify_source(p: &Path) -> ToolSource {
+    if is_managed_path(p) {
+        ToolSource::Managed
+    } else if p.to_string_lossy().to_lowercase().contains("corepack") {
+        ToolSource::Corepack
+    } else {
+        ToolSource::System
+    }
+}
+
+fn catalog_has(id: &str, version: &str, platform: &str) -> bool {
+    match catalog::load_catalog() {
+        Ok(c) => catalog::lookup(&c, id, version, platform).is_some(),
+        Err(_) => false,
+    }
+}
+
+/// 当前实际生效的 Node(托管优先;系统回退;不兼容/缺失时给出推荐)。
+pub fn current_node() -> ToolRuntime {
+    let managed_available = catalog_has("node", NODE_CATALOG_VERSION, &catalog::current_platform());
+    if let Some((bin, ver)) = runtime::resolve_dsh_node() {
+        return ToolRuntime {
+            version: Some(ver),
+            source: Some(classify_source(&bin)),
+            path: Some(bin.display().to_string()),
+            status: ToolCheck::Detected,
+            verified: is_managed_path(&bin),
+            hint: None,
+            managed_available,
+        };
+    }
+    if let Some((bin, ver)) = runtime::incompatible_node() {
+        return ToolRuntime {
+            version: Some(ver.clone()),
+            source: Some(classify_source(&bin)),
+            path: Some(bin.display().to_string()),
+            status: ToolCheck::Incompatible,
+            verified: false,
+            hint: Some(format!(
+                "系统 Node {ver} 不在 dsh 要求范围({});推荐安装托管 Node {NODE_CATALOG_VERSION}",
+                runtime::NODE_RANGE_MSG
+            )),
+            managed_available,
+        };
+    }
+    ToolRuntime {
+        version: None,
+        source: None,
+        path: None,
+        status: ToolCheck::Missing,
+        verified: false,
+        hint: Some(format!(
+            "未找到 Node;可安装托管 Node {NODE_CATALOG_VERSION}(或系统安装 {} 的 Node)",
+            runtime::NODE_RANGE_MSG
+        )),
+        managed_available,
+    }
+}
+
+/// 当前实际生效的 pnpm(托管优先;系统/Corepack 回退;检测时注入托管 PATH)。
+pub fn current_pnpm(tools: &Tools) -> ToolRuntime {
+    let managed_available = PNPM_CATALOG_VERSIONS
+        .iter()
+        .any(|v| catalog_has("pnpm", v, "any"));
+    let Some(bin) = resolve_pnpm(tools) else {
+        return ToolRuntime {
+            version: None,
+            source: None,
+            path: None,
+            status: ToolCheck::Missing,
+            verified: false,
+            hint: Some(format!(
+                "未找到 pnpm(系统/托管均无);可安装托管 pnpm {}",
+                PNPM_CATALOG_VERSIONS[0]
+            )),
+            managed_available,
+        };
+    };
+    let managed = is_managed_path(&bin);
+    let env = tools.env();
+    match runtime::probe_version_with(&bin, &env) {
+        Some(v) => ToolRuntime {
+            version: Some(v),
+            source: Some(classify_source(&bin)),
+            path: Some(bin.display().to_string()),
+            status: ToolCheck::Detected,
+            verified: managed,
+            hint: None,
+            managed_available,
+        },
+        None => ToolRuntime {
+            version: None,
+            source: Some(classify_source(&bin)),
+            path: Some(bin.display().to_string()),
+            status: ToolCheck::Incompatible,
+            verified: false,
+            hint: Some("检测到 pnpm 但无法读取版本;推荐安装托管 pnpm".into()),
+            managed_available,
+        },
+    }
+}
+
+/// 当前实际生效的 git:macOS/Linux 恒为系统 git;Windows 托管 MinGit 优先,系统回退。
+pub fn current_git(tools: &Tools) -> ToolRuntime {
+    let managed_available = cfg!(windows)
+        && catalog_has(
+            "mingit",
+            MINGIT_CATALOG_VERSION,
+            &catalog::current_platform(),
+        );
+    let Some(bin) = resolve_git(tools) else {
+        return ToolRuntime {
+            version: None,
+            source: None,
+            path: None,
+            status: ToolCheck::Missing,
+            verified: false,
+            hint: Some(if cfg!(windows) {
+                "未找到 git;可安装托管 MinGit".into()
+            } else {
+                "未找到系统 git;请安装 Xcode Command Line Tools 或 Homebrew git".into()
+            }),
+            managed_available,
+        };
+    };
+    let managed = is_managed_path(&bin);
+    match run_selfcheck(&bin, &["--version"]) {
+        Some(v) => {
+            // "git version 2.47.0" → 展示为 "2.47.0"
+            let version = v.strip_prefix("git version ").unwrap_or(&v).to_string();
+            ToolRuntime {
+                version: Some(version),
+                source: Some(classify_source(&bin)),
+                path: Some(bin.display().to_string()),
+                status: ToolCheck::Detected,
+                verified: managed,
+                hint: None,
+                managed_available,
+            }
+        }
+        None => ToolRuntime {
+            version: None,
+            source: Some(classify_source(&bin)),
+            path: Some(bin.display().to_string()),
+            status: ToolCheck::Incompatible,
+            verified: false,
+            hint: Some("检测到 git 但无法运行;macOS/Linux 请重装系统 Git".into()),
+            managed_available,
+        },
+    }
+}
+
+/// catalog 当前可安装的托管版本(「可选托管工具链」展示;Windows 才有 MinGit)。
+pub fn offered_versions() -> crate::ops::OfferedVersions {
+    crate::ops::OfferedVersions {
+        node: NODE_CATALOG_VERSION.to_string(),
+        git: if cfg!(windows) {
+            Some(MINGIT_CATALOG_VERSION.to_string())
+        } else {
+            None
+        },
+        pnpm: PNPM_CATALOG_VERSIONS[0].to_string(),
+    }
+}
+
 // ── 顶层安装入口 ─────────────────────────────────────────
 
 /// 确保工具链就绪(幂等;缺失才安装)。
@@ -684,5 +868,52 @@ mod tests {
             assert!(content.contains("bin/pnpm.cjs"));
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn classify_source_managed_system_corepack() {
+        let _g = crate::test_lock::ENV_LOCK.lock().unwrap();
+        let base = std::env::temp_dir().join(format!("dsh-src-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::env::set_var("DSH_LAUNCHER_STATE_DIR", base.join("state"));
+        std::env::set_var("DSH_LAUNCHER_CONFIG_DIR", base.join("config"));
+
+        // 托管目录(新 toolchains + 旧迁移目录)
+        let managed = toolchains_dir()
+            .join("node")
+            .join("v24.9.0")
+            .join("bin")
+            .join("node");
+        assert_eq!(classify_source(&managed), ToolSource::Managed);
+        assert!(is_managed_path(&managed));
+        let legacy = state_dir()
+            .join("node")
+            .join("v24.9.0")
+            .join("bin")
+            .join("node");
+        assert_eq!(classify_source(&legacy), ToolSource::Managed);
+
+        // 系统安装(PATH/Homebrew)
+        let system = Path::new("/usr/local/bin/node");
+        assert_eq!(classify_source(system), ToolSource::System);
+        assert!(!is_managed_path(system));
+
+        // 项目本地 / Corepack
+        let corepack = base.join("corepack/v1/pnpm/11.21.0/pnpm");
+        assert_eq!(classify_source(&corepack), ToolSource::Corepack);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn offered_versions_reflect_catalog_defaults() {
+        let o = offered_versions();
+        assert_eq!(o.node, NODE_CATALOG_VERSION);
+        assert_eq!(o.pnpm, PNPM_CATALOG_VERSIONS[0]);
+        if cfg!(windows) {
+            assert_eq!(o.git.as_deref(), Some(MINGIT_CATALOG_VERSION));
+        } else {
+            assert_eq!(o.git, None, "macOS/Linux 不提供托管 MinGit");
+        }
     }
 }

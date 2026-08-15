@@ -60,6 +60,8 @@ export function ServiceCard({ snap, mode, onModeChange, onAction, onOpenDsh, onS
                 {webPid ? <span className="ml-2">PID {webPid}</span> : null}
                 <span className="ml-2">已运行 {formatDuration(startedAt)}</span>
               </>
+            ) : running ? (
+              '服务运行中（上次运行记录未包含访问地址）'
             ) : (
               '尚未启动 — 就绪后自动打开主界面'
             )}

@@ -38,21 +38,23 @@ describe('App 首次运行门控', () => {
     render(<App />)
     expect(await screen.findByText('DeepSeek Harness')).toBeInTheDocument()
     expect(await screen.findByText('仓库与构建')).toBeInTheDocument()
-    expect(await screen.findByText('运行环境')).toBeInTheDocument()
+    expect(await screen.findByText('工具链')).toBeInTheDocument()
     expect(screen.getByRole('radiogroup', { name: '启动方式' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '普通启动' })).toBeInTheDocument()
   })
 })
 
 describe('App 页面导航', () => {
-  it('首页运行态的打开按钮使用内嵌 chat', async () => {
+  it('首页运行态的打开按钮进入主窗口 DeepSeek 工作区(不弹独立 chat 窗口)', async () => {
     const openChat = vi.spyOn(mockApi, 'openChat')
     const openDsh = vi.spyOn(mockApi, 'openDsh')
+    const openWorkspace = vi.spyOn(mockApi, 'openDshWorkspace')
     render(<App />)
     const user = userEvent.setup()
     await user.click(await screen.findByRole('button', { name: '普通启动' }))
     await user.click(await screen.findByRole('button', { name: '打开 dsh' }, { timeout: 2_000 }))
-    expect(openChat).toHaveBeenCalledOnce()
+    expect(openWorkspace).toHaveBeenCalledOnce()
+    expect(openChat).not.toHaveBeenCalled()
     expect(openDsh).not.toHaveBeenCalled()
   })
 

@@ -143,10 +143,10 @@ pub fn setup(app: &AppHandle) -> tauri::Result<TrayIcon<tauri::Wry>> {
             "status" => {}
             "show" => show_main_window(app),
             "open-dsh" => {
-                // M3:优先打开内嵌 chat WebView(零权限);失败回退系统浏览器
-                if crate::chat::open_chat(app).is_err() {
-                    let _ = app.state::<Arc<AppState>>().open_dsh();
-                }
+                // M4.1:主窗口内 DeepSeek 工作区(子 WebView,不创建第二个窗口、不开浏览器);
+                // 失败时前端给出错误状态与重试入口
+                let _ = crate::dsh_view::open_dsh_workspace(app);
+                show_main_window(app);
             }
             "start" => {
                 let _ = app.state::<Arc<AppState>>().run_action(app, "start");

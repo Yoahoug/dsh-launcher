@@ -654,6 +654,47 @@ pub fn process_cmdline(pid: u32) -> Option<String> {
     }
 }
 
+/// 端口持有者是否属于 Launcher 托管进程树。
+/// 用实际父子关系绑定监听进程与受管 pnpm 进程，避免“受管 PID 存活 + 其他进程占端口”
+/// 被误判为同一个 DSH 实例。
+pub fn process_descends_from(pid: u32, ancestor: u32) -> bool {
+    if pid == ancestor {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        let mut current = pid;
+        for _ in 0..16 {
+            let out = match std::process::Command::new("ps")
+                .args(["-o", "ppid=", "-p", &current.to_string()])
+                .output()
+            {
+                Ok(out) if out.status.success() => out,
+                _ => return false,
+            };
+            let Some(parent) = String::from_utf8_lossy(&out.stdout)
+                .trim()
+                .parse::<u32>()
+                .ok()
+            else {
+                return false;
+            };
+            if parent == ancestor {
+                return true;
+            }
+            if parent == 0 || parent == current {
+                return false;
+            }
+            current = parent;
+        }
+        false
+    }
+    #[cfg(windows)]
+    {
+        crate::services::supervisor::win::process_descends_from(pid, ancestor)
+    }
+}
+
 /// 日志文件路径(按日期?统一 runtime.log;M4 保留单文件方案)。
 pub fn log_file() -> PathBuf {
     logs_dir().join("launcher.log")
@@ -777,5 +818,18 @@ pub mod win {
         } else {
             Some(s)
         }
+    }
+
+    pub fn process_descends_from(pid: u32, ancestor: u32) -> bool {
+        // 单次 CIM 查询内沿 ParentProcessId 向上追溯，避免每层启动一次 PowerShell。
+        let script = format!(
+            "$cur={pid}; $ancestor={ancestor}; $ok=$false; for($i=0; $i -lt 16; $i++) {{ try {{ $p=(Get-CimInstance Win32_Process -Filter \"ProcessId=$cur\").ParentProcessId }} catch {{ break }}; if($p -eq $ancestor) {{ $ok=$true; break }}; if(!$p -or $p -eq $cur) {{ break }}; $cur=$p }}; if($ok) {{ 'true' }} else {{ 'false' }}"
+        );
+        std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .output()
+            .ok()
+            .filter(|out| out.status.success())
+            .is_some_and(|out| String::from_utf8_lossy(&out.stdout).trim() == "true")
     }
 }

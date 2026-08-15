@@ -105,6 +105,12 @@ fn spawn_web_ready_then_stop() {
         url.contains(&format!("http://127.0.0.1:{port}")),
         "就绪 URL 应指向配置端口: {url}"
     );
+    let holder =
+        dsh_launcher_lib::services::supervisor::port_holder_pid(port).expect("就绪端口应有持有者");
+    assert!(
+        dsh_launcher_lib::services::supervisor::process_descends_from(holder, pid),
+        "端口持有者必须属于受管 pnpm 进程树: holder={holder}, managed={pid}"
+    );
 
     // 停止:优雅 → 5s → 强杀;进程必须消失
     let out = sup.stop("dsh web");

@@ -7,16 +7,18 @@ import type {
   AppSnapshot,
   DesktopPreferences,
   DesktopSnapshot,
+  DshViewSnapshot,
   EnvironmentSnapshot,
   LogEntry,
   LogPage,
   PageName,
   SettingsSnapshot,
+  Workspace,
 } from '@/types/schema'
 import type { DesktopApi } from '@/lib/desktop-api'
 import { EVENTS } from '@/types/schema'
 
-const VERSION = '0.4.0'
+const VERSION = '0.5.0'
 
 const baseRepo = {
   branch: 'main',
@@ -78,6 +80,8 @@ let current = mockSnapshot()
 
 function patch(next: Partial<AppSnapshot>) {
   current = { ...current, ...next }
+  // 测试环境 teardown 后 window 已销毁:仅更新内存态,不再派发事件(避免未处理异常)
+  if (typeof window === 'undefined') return
   window.dispatchEvent(new CustomEvent('mock:state', { detail: current }))
 }
 
@@ -110,39 +114,138 @@ function loadPrefs(): DesktopPreferences {
 
 let prefs = loadPrefs()
 
+// ── M4.1:DeepSeek 工作区(dsh-content 子 WebView)mock 状态机 ──
+// 与 Rust dsh_view 语义对齐:accepted ≠ success;只有服务 running + 视图 ready
+// 才自动进入 DeepSeek 工作区;失败/取消留在启动器或错误状态。
+
+// ── 定时器登记(测试用):__resetDshView 会清空未触发的定时器,避免跨测试泄漏 ──
+const pendingTimers = new Set<ReturnType<typeof setTimeout>>()
+function later(fn: () => void, ms: number) {
+  const id = setTimeout(() => {
+    pendingTimers.delete(id)
+    fn()
+  }, ms)
+  pendingTimers.add(id)
+  return id
+}
+
+let dshView: DshViewSnapshot = {
+  workspace: 'launcher',
+  status: 'not_created',
+  url: 'http://127.0.0.1:3080/',
+  error: null,
+  pendingEnter: false,
+  canBackToLauncher: false,
+  canRetry: false,
+  canReconnect: false,
+}
+
+function emitDshView(next: Partial<DshViewSnapshot>) {
+  const merged = { ...dshView, ...next }
+  dshView = {
+    ...merged,
+    canBackToLauncher: merged.workspace === 'dsh',
+    canRetry: merged.status === 'failed' || merged.status === 'disconnected',
+    canReconnect: merged.status === 'disconnected',
+  }
+  // 测试环境 teardown 后 window 已销毁:仅更新内存态,不再派发事件
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new CustomEvent('mock:dshview', { detail: dshView }))
+}
+
+/** 模拟服务 running 后进入 dsh 工作区(自动进入;仅在有 pending 意图时)。 */
+function maybeAutoEnterDsh() {
+  const running = current.state === 'running'
+  if (!running || !dshView.pendingEnter) return
+  // 模拟:健康检查 + 子 WebView 创建 + 页面加载 → ready
+  later(() => {
+    if (!dshView.pendingEnter || current.state !== 'running') return
+    emitDshView({
+      workspace: 'dsh',
+      status: 'creating',
+      pendingEnter: true,
+      error: '正在启动 DSH 服务并加载 DeepSeek 界面,就绪后自动进入…',
+    })
+    later(() => {
+      if (!dshView.pendingEnter || current.state !== 'running') return
+      emitDshView({ workspace: 'dsh', status: 'ready', pendingEnter: false, error: null })
+    }, 400)
+  }, 150)
+}
+
+/** vitest 每测后重置工作区状态(避免 workspace/status 跨测试泄漏)。 */
+export function __resetDshView() {
+  for (const id of pendingTimers) clearTimeout(id)
+  pendingTimers.clear()
+  current = mockSnapshot()
+  dshView = {
+    workspace: 'launcher',
+    status: 'not_created',
+    url: 'http://127.0.0.1:3080/',
+    error: null,
+    pendingEnter: false,
+    canBackToLauncher: false,
+    canRetry: false,
+    canReconnect: false,
+  }
+}
+
+/** 模拟启动流程(runAction start/dev/update/rebuild 共用)。 */
+function simulateStart(mode: 'normal' | 'dev') {
+  emitDshView({ status: 'creating', pendingEnter: true, error: '正在启动 DSH 服务并加载 DeepSeek 界面,就绪后自动进入…' })
+  patch({ state: 'starting', busy: true, mode, phase: mode === 'dev' ? '启动开发模式…' : '启动 dsh web…' })
+  later(() => {
+    patch({
+      state: 'running', busy: false, url: 'http://127.0.0.1:3080/',
+      webPid: 88321, devPid: mode === 'dev' ? 88345 : null,
+      startedAt: Date.now(), readyAt: Date.now(), hmrActive: mode === 'dev',
+    })
+    maybeAutoEnterDsh()
+  }, 800)
+}
+
 export const mockApi: DesktopApi = {
   getAppSnapshot: async () => current,
   runAction: async (action: ActionName): Promise<ActionAccepted> => {
     logEntry('launcher', 'info', `动作:${action}(mock)`)
     if (action === 'start') {
-      patch({ state: 'starting', busy: true, mode: 'normal', phase: '启动 dsh web…' })
-      setTimeout(() => patch({ state: 'running', busy: false, url: 'http://127.0.0.1:3080/', webPid: 88321, startedAt: Date.now(), readyAt: Date.now() }), 800)
+      simulateStart('normal')
       return { ok: true }
     }
     if (action === 'stop') {
       patch({ state: 'stopping', busy: true })
-      setTimeout(() => patch({ state: 'idle', busy: false, mode: 'none', url: null, webPid: null, devPid: null }), 500)
+      later(() => {
+        patch({ state: 'idle', busy: false, mode: 'none', url: null, webPid: null, devPid: null })
+        emitDshView({ status: 'disconnected', workspace: 'launcher', pendingEnter: false, error: 'DSH 服务已停止' })
+      }, 500)
       return { ok: true }
     }
     if (action === 'dev') {
-      patch({ state: 'starting', busy: true, mode: 'dev', phase: '启动开发模式…' })
-      setTimeout(() => patch({ state: 'running', busy: false, url: 'http://127.0.0.1:3080/', webPid: 88321, devPid: 88345, startedAt: Date.now(), readyAt: Date.now() }), 800)
+      simulateStart('dev')
       return { ok: true }
     }
     if (action === 'update') {
+      emitDshView({ status: 'creating', pendingEnter: true, error: '更新并启动中…' })
       patch({ state: 'syncing', busy: true, phase: '同步远端…' })
-      setTimeout(() => {
+      later(() => {
         patch({ state: 'building', phase: '构建 web 前端…' })
-        setTimeout(() => {
+        later(() => {
           patch({ state: 'starting', phase: '启动 dsh web…' })
-          setTimeout(() => patch({ state: 'running', busy: false, url: 'http://127.0.0.1:3080/', webPid: 88321 }), 800)
+          later(() => {
+            patch({ state: 'running', busy: false, url: 'http://127.0.0.1:3080/', webPid: 88321 })
+            maybeAutoEnterDsh()
+          }, 800)
         }, 900)
       }, 600)
       return { ok: true }
     }
     if (action === 'rebuild') {
+      emitDshView({ status: 'creating', pendingEnter: true, error: '重建并启动中…' })
       patch({ state: 'building', busy: true, phase: '构建中…' })
-      setTimeout(() => patch({ state: 'running', busy: false, url: 'http://127.0.0.1:3080/', webPid: 88321 }), 1500)
+      later(() => {
+        patch({ state: 'running', busy: false, url: 'http://127.0.0.1:3080/', webPid: 88321 })
+        maybeAutoEnterDsh()
+      }, 1500)
       return { ok: true }
     }
     if (action === 'clear') {
@@ -177,8 +280,21 @@ export const mockApi: DesktopApi = {
     repoPath: '/Users/yoahoug/Desktop/deepseek-harness',
     repoUsable: { ok: true },
     distBuilt: true,
-    node: { current: 'v24.19.0', inRange: true, used: null, usedVersion: null, usedSource: null },
-    pnpm: '10.0.0', git: 'git version 2.47.0', warnings: [],
+    platform: 'macos',
+    // 系统工具齐全(自检通过),未启用托管 → 页面必须展示系统版本而非“未安装”
+    node: {
+      version: 'v24.19.0', source: 'system', path: '/usr/local/bin/node',
+      status: 'detected', verified: false, hint: null, managedAvailable: true,
+    },
+    pnpm: {
+      version: '11.7.0', source: 'system', path: '/Users/you/Library/pnpm/pnpm',
+      status: 'detected', verified: false, hint: null, managedAvailable: true,
+    },
+    git: {
+      version: '2.47.0', source: 'system', path: '/usr/bin/git',
+      status: 'detected', verified: false, hint: null, managedAvailable: false,
+    },
+    warnings: [],
   }),
   getDesktopSnapshot: async (): Promise<DesktopSnapshot> => {
     const q = new URLSearchParams(window.location.search)
@@ -200,6 +316,54 @@ export const mockApi: DesktopApi = {
   openChat: async () => ({ status: 'ready', url: 'http://127.0.0.1:3080/', error: null }),
   closeChat: async () => {},
   getChatState: async () => ({ status: 'ready', url: 'http://127.0.0.1:3080/', error: null }),
+  // M4.1:DeepSeek 工作区(mock 状态机)
+  openDshWorkspace: async (): Promise<DshViewSnapshot> => {
+    // 幂等:已就绪直接返回
+    if (dshView.workspace === 'dsh' && dshView.status === 'ready') {
+      return { ...dshView }
+    }
+    // 视图已就绪但工作区在启动器:直接切回(会话保持,不销毁不刷新)
+    if (dshView.status === 'ready') {
+      emitDshView({ workspace: 'dsh', status: 'ready', pendingEnter: false, error: null })
+      return { ...dshView }
+    }
+    emitDshView({ workspace: 'dsh', status: 'creating', pendingEnter: true, error: '正在启动 DSH 服务并加载 DeepSeek 界面,就绪后自动进入…' })
+    // 测试钩子:?dsh-fail=1 → 启动失败(accepted ≠ success,进入错误状态)
+    if (new URLSearchParams(window.location.search).get('dsh-fail') === '1') {
+      later(() => emitDshView({ workspace: 'dsh', status: 'failed', pendingEnter: false, error: 'DSH 服务启动失败(模拟)' }), 200)
+      return { ...dshView }
+    }
+    if (current.state === 'running') {
+      // 服务已就绪:模拟健康检查 + 视图加载
+      later(() => {
+        emitDshView({ workspace: 'dsh', status: 'loading', pendingEnter: true, error: null })
+        later(() => emitDshView({ workspace: 'dsh', status: 'ready', pendingEnter: false, error: null }), 400)
+      }, 150)
+    } else {
+      // 服务未就绪:启动服务,成功后自动进入
+      simulateStart('normal')
+    }
+    return { ...dshView }
+  },
+  backToLauncher: async (): Promise<DshViewSnapshot> => {
+    // 返回启动器:隐藏子视图,会话/状态保持(不销毁不刷新)
+    emitDshView({ workspace: 'launcher', pendingEnter: false, error: null })
+    return { ...dshView }
+  },
+  retryDshView: async (): Promise<DshViewSnapshot> => {
+    emitDshView({ workspace: 'dsh', status: 'creating', pendingEnter: true, error: '正在重新连接 DeepSeek…' })
+    if (current.state === 'running') {
+      later(() => emitDshView({ workspace: 'dsh', status: 'ready', pendingEnter: false, error: null }), 400)
+    } else {
+      simulateStart('normal')
+    }
+    return { ...dshView }
+  },
+  setWorkspace: async (workspace: Workspace): Promise<DshViewSnapshot> => {
+    if (workspace === 'launcher') return mockApi.backToLauncher()
+    return mockApi.openDshWorkspace()
+  },
+  getDshViewState: async (): Promise<DshViewSnapshot> => ({ ...dshView }),
   openRepoDirectory: async () => {},
   openLogDirectory: async () => {},
   pickDirectory: async () => '/Users/yoahoug/Desktop/deepseek-harness',
@@ -212,7 +376,7 @@ export const mockApi: DesktopApi = {
   submitCloneRequest: async (req) => {
     logEntry('git', 'info', `克隆请求:${req.url}(mock)`)
     patch({ state: 'installing', busy: true, phase: '克隆中…' })
-    setTimeout(() => patch({ state: 'idle', busy: false, phase: '' }), 1200)
+    later(() => patch({ state: 'idle', busy: false, phase: '' }), 1200)
     return { ok: true }
   },
   getCloneState: async () => ({ lastGoodUrl: 'https://github.com/deepseek-ai/deepseek-harness.git' }),
@@ -222,6 +386,7 @@ export const mockApi: DesktopApi = {
     git: null,
     pnpm: null,
     installedAt: Date.now(),
+    offered: { node: 'v24.9.0', git: null, pnpm: '11.7.0' },
   }),
   perfMark: async () => {},
   getPerfMetrics: async () => [{ name: 'process_start', ms: 0 }, { name: 'react_interactive', ms: 312 }],
@@ -249,6 +414,11 @@ export const mockApi: DesktopApi = {
     const h = (e: Event) => cb((e as CustomEvent).detail as never)
     window.addEventListener('mock:perf', h)
     return () => window.removeEventListener('mock:perf', h)
+  },
+  onDshViewState: async (cb) => {
+    const h = (e: Event) => cb((e as CustomEvent<DshViewSnapshot>).detail)
+    window.addEventListener('mock:dshview', h)
+    return () => window.removeEventListener('mock:dshview', h)
   },
 }
 

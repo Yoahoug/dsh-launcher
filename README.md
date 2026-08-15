@@ -21,14 +21,16 @@ Tauri 2 原生核心(纯 Rust,无 Node daemon)+ React 控制台 · 一键启动 
 | **重建并重启 / 停止** | 进程组停止(SIGTERM → 5s → SIGKILL),零残留;危险动作有确认弹窗 |
 | **托管工具链** | 签名 catalog(全部国内镜像)一键安装 Node 24 LTS / Git / pnpm 到托管目录;自动解析 dsh 兼容 Node(`^22.19 \|\| >=24`) |
 | **环境检查** | 仓库可用性、前端 dist 是否已构建、Node 版本是否在 dsh 范围内,逐项给出可执行诊断 |
-| **内嵌 dsh 窗口** | 「打开 dsh」在独立 WebView 窗口打开 `http://127.0.0.1:3080`(零权限、健康检查确认是预期 DSH 实例);也可用系统浏览器打开 |
+| **主窗口 DeepSeek 工作区** | 标题栏可在「启动器 / DeepSeek」间切换；DeepSeek 由同一原生窗口内的零权限子 WebView 承载，不弹独立窗口、不使用 iframe、不跳浏览器 |
+| **成功后自动进入** | 启动、开发、更新构建或重建只有到达真实成功终态，并通过服务、健康检查、端口持有者和页面就绪校验后才进入 DeepSeek；失败、取消和超时不会提前显示成功 |
+| **会话保持与重连** | 返回启动器仅隐藏子 WebView，再进入时保留登录态、会话和页面状态；服务重启时显示断线状态并自动重连 |
 | **后台常驻** | 关窗默认最小化到托盘,服务不受影响;重启启动器后自动**召回**运行中的 dsh web(进程存活 + 命令行 + 端口三重校验) |
 | **托盘 / 单实例** | 托盘动态状态菜单 + 左键召回主窗口;重复启动只召回,不重复起 |
 | **日志** | 实时推送 + 按来源着色;落盘 `~/.local/state/dsh-launcher/logs/` 可回溯 |
 | **自动更新** | Tauri updater(minisign 签名),启动时自动检查或手动检查,下载安装后自动重启 |
 | **设置** | 仓库路径、端口、host、`DSH_HOME`、构建参数透传、超时、开机自启、主题(亮色/深色/跟随系统)、关窗行为 |
 
-> 定位铁律:**启动器只是一个启动器**。它不承载任何 dsh 界面——主界面永远是 `http://127.0.0.1:3080/`(dsh web),启动器只负责把它拉起来、托管进程、提供控制与日志。
+> 主 React WebView 只负责原生窗口外壳、标题栏和启动器控制台；DeepSeek 页面仍由本机 `dsh web` 提供，并在标题栏以下的独立零权限子 WebView 中显示。远程页面不获得 Tauri IPC，也不注入本地密钥或状态。
 
 ## 🚀 快速开始
 
@@ -70,7 +72,8 @@ src-tauri/               Tauri 2 原生核心(纯 Rust,无 Node daemon)
   src/services/          进程托管(supervisor)、git 同步(repo)、构建(build)
   src/ops.rs             长任务编排(journal / 取消 / 崩溃恢复)
   src/toolchain.rs       托管工具链(签名 catalog + 国内镜像)
-  src/chat.rs            内嵌 dsh WebView(独立窗口,零权限)
+  src/dsh_view.rs        主窗口内 DeepSeek 子 WebView(零权限、状态机、重连与布局)
+  src/chat.rs            旧独立 WebView 回退路径(普通 UI/托盘不再调用)
   src/tray.rs            托盘(动态状态菜单 + 召回)
   src/log_hub.rs         日志中心(落盘 + 事件广播)
 src-ui/                  React + TypeScript + Vite 控制台

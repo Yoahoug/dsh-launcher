@@ -7,7 +7,7 @@ use crate::config;
 use crate::contract::{
     ActionAccepted, AppSnapshot, DesktopPreferences, DesktopSnapshot, DisabledAction,
     EnvironmentSnapshot, ErrorSummary, LauncherMode, LauncherState, LogPage, OperationKind,
-    OperationStatus, RepoSnapshot, SettingsSnapshot, UpdateResult, EVENT_STATE_CHANGED,
+    OperationStatus, RepoSnapshot, SettingsSnapshot, ToolCheck, UpdateResult, EVENT_STATE_CHANGED,
 };
 use crate::log_hub::LogHub;
 use crate::ops::{CancellationToken, InstallationSnapshot, OperationCoordinator, OperationError};
@@ -19,7 +19,7 @@ use crate::services::supervisor::Supervisor;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 pub struct AppState {
     pub log_hub: Arc<LogHub>,
@@ -205,6 +205,8 @@ impl AppState {
         let snap = self.finalize(snap);
         let _ = app.emit(EVENT_STATE_CHANGED, &snap);
         crate::tray::refresh(app);
+        // 启动成功后自动进入 DeepSeek 工作区(真实终态 + 健康 + 子视图就绪才动作)
+        crate::dsh_view::maybe_auto_enter(app);
     }
 
     pub fn snapshot(&self) -> AppSnapshot {
@@ -302,42 +304,39 @@ impl AppState {
         let settings = config::load();
         let tools = self.tools.lock().unwrap().clone();
         let mut warnings = Vec::new();
-        if tools.pnpm.is_none() {
+
+        // 「当前实际生效」的工具链:托管优先,系统回退(与子进程 PATH 组装一致)。
+        let node = crate::toolchain::current_node();
+        let pnpm = crate::toolchain::current_pnpm(&tools);
+        let git = crate::toolchain::current_git(&tools);
+
+        if node.is_missing() {
+            warnings.push("未找到 dsh 要求版本(^22.19 || >=24)的 Node;可安装托管 Node".into());
+        } else if node.status == ToolCheck::Incompatible {
+            warnings
+                .push("系统 Node 版本不在 dsh 要求范围(^22.19 || >=24),推荐安装托管 Node".into());
+        }
+        if pnpm.is_missing() {
             warnings.push(
-                "未找到 pnpm,请先安装(或「安装托管工具链」);「启动/开发模式/更新并构建」需要它"
+                "未找到 pnpm(系统/托管均无);「启动/开发模式/更新并构建」需要它,可安装托管 pnpm"
                     .into(),
             );
         }
-        if tools.git.is_none() {
-            warnings.push("未找到 git,「克隆仓库/更新并构建」不可用;可安装托管 Git".into());
-        }
-        let dsh_node = runtime::resolve_dsh_node();
-        if dsh_node.is_none() {
+        if git.is_missing() {
             warnings.push(
-                "未找到 dsh 要求版本范围(^22.19 || >=24)的 Node;开发模式与构建将不可用,可安装托管 Node"
-                    .to_string(),
+                "未找到 git,「克隆仓库/更新并构建」不可用;macOS/Linux 请安装系统 Git,Windows 可安装托管 MinGit"
+                    .into(),
             );
         }
+
         EnvironmentSnapshot {
             repo_path: settings.repo_path.clone(),
             repo_usable: config::repo_usable(&settings.repo_path),
             dist_built: config::dist_built(&settings.repo_path),
-            node: crate::contract::EnvironmentNode {
-                current: dsh_node
-                    .as_ref()
-                    .map(|(_, v)| v.clone())
-                    .unwrap_or_default(),
-                in_range: dsh_node.is_some(),
-                used: dsh_node.as_ref().map(|(p, _)| p.display().to_string()),
-                used_version: dsh_node.as_ref().map(|(_, v)| v.clone()),
-                used_source: dsh_node.as_ref().map(|_| "系统安装/托管".to_string()),
-            },
-            pnpm: tools.pnpm.map(|p| {
-                p.parent()
-                    .map(|d| d.display().to_string())
-                    .unwrap_or_else(|| p.display().to_string())
-            }),
-            git: tools.git.map(|g| g.display().to_string()),
+            platform: crate::toolchain::platform_name().to_string(),
+            node,
+            pnpm,
+            git,
             warnings,
         }
     }
@@ -492,6 +491,13 @@ impl AppState {
         // 立即广播「已接受」快照(operation 可见)
         self.set_snapshot(app, |_| {});
 
+        // 记录「成功后进入 DeepSeek」意图(accepted ≠ success;终态成功才切换)
+        if matches!(action, "start" | "dev" | "update" | "rebuild") {
+            let mgr = app.state::<Arc<crate::dsh_view::DshViewManager>>();
+            mgr.pending_enter
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+
         let app = app.clone();
         let me = self.clone();
         let action = action.to_string();
@@ -585,32 +591,6 @@ impl AppState {
             });
             s.phase = String::new();
         });
-    }
-
-    /// 打开浏览器。
-    fn open_browser(&self, url: &str) {
-        let settings = config::load();
-        if !settings.open_browser {
-            self.log_hub.append(
-                "launcher",
-                crate::contract::LogLevel::Ok,
-                &format!("(openBrowser 已关闭,跳过自动打开)→ {url}"),
-            );
-            return;
-        }
-        if let Err(e) = tauri_plugin_opener::open_url(url, None::<&str>) {
-            self.log_hub.append(
-                "launcher",
-                crate::contract::LogLevel::Warn,
-                &format!("打开浏览器失败:{e}"),
-            );
-        } else {
-            self.log_hub.append(
-                "launcher",
-                crate::contract::LogLevel::Ok,
-                &format!("自动打开浏览器 → {url}"),
-            );
-        }
     }
 
     /// 端口占用诊断。
@@ -712,20 +692,15 @@ impl AppState {
             );
             return Err(OperationError::Failed("repo-unusable".into()));
         }
-        // 已在运行 → 直接召回
+        // 已在运行 → 直接召回(不打开系统浏览器;成功后自动进入 DeepSeek 工作区)
         {
             let snap = self.snapshot.lock().unwrap();
             if snap.state == LauncherState::Running && snap.web_pid.is_some() {
-                let url = snap
-                    .url
-                    .clone()
-                    .unwrap_or_else(|| format!("http://{}:{}/", settings.host, settings.port));
                 self.log_hub.append(
                     "launcher",
                     crate::contract::LogLevel::Info,
-                    "dsh web 已在运行,直接打开主界面",
+                    "dsh web 已在运行,将自动进入 DeepSeek 工作区",
                 );
-                self.open_browser(&url);
                 return Ok(());
             }
         }
@@ -1439,8 +1414,7 @@ impl AppState {
     }
 
     pub fn open_dsh(&self) -> Result<(), String> {
-        let settings = config::load();
-        let url = format!("http://{}:{}/", settings.host, settings.port);
+        let url = crate::dsh_view::dsh_url();
         tauri_plugin_opener::open_url(&url, None::<&str>).map_err(|e| format!("打开 dsh 失败:{e}"))
     }
 
@@ -1464,9 +1438,11 @@ impl AppState {
         self.supervisor.detach();
     }
 
-    /// 安装快照(供设置页显示托管工具链状态)。
+    /// 安装快照(供设置页显示托管工具链状态;offered 读取时按当前 catalog 实时补齐)。
     pub fn installation(&self) -> InstallationSnapshot {
-        crate::ops::load_installation()
+        let mut snap = crate::ops::load_installation();
+        snap.offered = crate::toolchain::offered_versions();
+        snap
     }
 }
 

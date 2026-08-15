@@ -207,6 +207,21 @@ pub struct InstalledComponent {
     pub source: String,
 }
 
+/// catalog 默认提供的托管版本(UI 展示「可安装 vX」;不持久化语义,读取时实时计算)。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct OfferedVersions {
+    /// catalog 默认托管 Node 版本(如 v24.9.0)。
+    #[serde(default)]
+    pub node: String,
+    /// Windows 托管 MinGit 版本;macOS/Linux 为 None(使用系统 git)。
+    #[serde(default)]
+    pub git: Option<String>,
+    /// catalog 默认托管 pnpm 版本(如 11.7.0)。
+    #[serde(default)]
+    pub pnpm: String,
+}
+
 /// 已安装工具链快照(versioned dir + active pointer 的旁证)。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
@@ -216,6 +231,9 @@ pub struct InstallationSnapshot {
     pub git: Option<InstalledComponent>,
     pub pnpm: Option<InstalledComponent>,
     pub installed_at: Option<i64>,
+    /// catalog 当前可安装的托管版本(旧 installation.json 无此字段,默认补齐)。
+    #[serde(default)]
+    pub offered: OfferedVersions,
 }
 
 pub fn installation_file() -> PathBuf {
@@ -585,11 +603,22 @@ mod tests {
             git: None,
             pnpm: None,
             installed_at: Some(123),
+            offered: OfferedVersions {
+                node: "v24.9.0".into(),
+                git: None,
+                pnpm: "11.7.0".into(),
+            },
         };
         save_installation(&snap).unwrap();
         let back = load_installation();
         assert_eq!(back, snap);
         assert!(installation_file().exists());
+        // 旧文件(无 offered 字段)必须可解析,offered 回落到默认
+        let legacy =
+            r#"{"catalogVersion":1,"node":null,"git":null,"pnpm":null,"installedAt":null}"#;
+        std::fs::write(installation_file(), legacy).unwrap();
+        let back2 = load_installation();
+        assert_eq!(back2.offered, OfferedVersions::default());
         let _ = std::fs::remove_dir_all(&base);
     }
 

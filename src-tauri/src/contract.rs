@@ -296,14 +296,55 @@ pub struct RepoUsable {
     pub reason: Option<String>,
 }
 
+/// 工具链来源:系统安装 / Launcher 托管 / 项目本地·Corepack。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolSource {
+    /// 系统安装(PATH / Homebrew / nvm / volta / fnm 等,非 Launcher 管理)。
+    System,
+    /// Launcher 托管(签名 catalog 下载,版本化目录,子进程 PATH 注入)。
+    Managed,
+    /// 项目本地 / Corepack(路径含 corepack)。
+    Corepack,
+}
+
+/// 工具链组件检测状态。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolCheck {
+    /// 存在且自检通过(版本可用)。
+    Detected,
+    /// 存在但版本不兼容/无法读取版本。
+    Incompatible,
+    /// 所有来源(系统/托管/项目)均不存在。
+    Missing,
+}
+
+/// 单个工具链组件的运行时快照(当前实际生效;版本/来源/路径/检测状态)。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct EnvironmentNode {
-    pub current: String,
-    pub in_range: bool,
-    pub used: Option<String>,
-    pub used_version: Option<String>,
-    pub used_source: Option<String>,
+pub struct ToolRuntime {
+    /// 实际生效版本(如 v24.9.0 / 11.21.0 / 2.47.0);None = 未安装。
+    pub version: Option<String>,
+    /// 来源;None = 未安装。
+    pub source: Option<ToolSource>,
+    /// 实际生效可执行文件绝对路径;None = 未安装。
+    pub path: Option<String>,
+    /// 检测状态。
+    pub status: ToolCheck,
+    /// 是否经签名 catalog 下载并 SHA-256 校验。仅托管工具可为 true;系统工具恒 false。
+    pub verified: bool,
+    /// 明确提示/推荐(不兼容或缺失时给出可执行建议)。
+    pub hint: Option<String>,
+    /// 是否存在可切换的托管版本(catalog 有当前平台条目)。
+    pub managed_available: bool,
+}
+
+impl ToolRuntime {
+    /// 是否缺失(所有来源均不存在)。
+    pub fn is_missing(&self) -> bool {
+        self.status == ToolCheck::Missing
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -312,9 +353,11 @@ pub struct EnvironmentSnapshot {
     pub repo_path: String,
     pub repo_usable: RepoUsable,
     pub dist_built: Option<bool>,
-    pub node: EnvironmentNode,
-    pub pnpm: Option<String>,
-    pub git: Option<String>,
+    /// 当前生效平台(macos / windows / linux;前端据此决定 MinGit 是否展示)。
+    pub platform: String,
+    pub node: ToolRuntime,
+    pub pnpm: ToolRuntime,
+    pub git: ToolRuntime,
     pub warnings: Vec<String>,
 }
 
@@ -342,6 +385,66 @@ pub struct UpdateResult {
     pub error: Option<String>,
 }
 
+// ── 主窗口内 DeepSeek 工作区(M4.1:dsh-content 子 WebView) ─────
+
+/// 主窗口内的工作区。launcher = 启动器管理界面;dsh = DeepSeek 完整工作区
+/// (主窗口内的子 WebView,不是独立窗口、不是 iframe)。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Workspace {
+    #[default]
+    Launcher,
+    Dsh,
+}
+
+/// dsh-content 子 WebView 生命周期状态。
+/// 只有 Ready 才允许显示 DeepSeek 工作区;Disconnected/Failed 必须显示断线/错误状态。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DshViewStatus {
+    /// 尚未创建子 WebView。
+    NotCreated,
+    /// 正在创建(异步,可能在等待服务就绪)。
+    Creating,
+    /// 已创建,正在加载 DSH 页面。
+    Loading,
+    /// 页面加载完成且健康检查通过(唯一可展示工作区状态)。
+    Ready,
+    /// DSH 服务意外退出,与子 WebView 断开(可重连)。
+    Disconnected,
+    /// 创建/加载失败(可重试)。
+    Failed,
+}
+
+impl DshViewStatus {
+    /// 当前是否处于「可展示子 WebView」状态(隐藏/显示切换依据)。
+    pub fn is_showable(self) -> bool {
+        matches!(self, DshViewStatus::Loading | DshViewStatus::Ready)
+    }
+
+    /// 终态失败(重试前停留在该状态)。
+    pub fn is_terminal_failure(self) -> bool {
+        matches!(self, DshViewStatus::Disconnected | DshViewStatus::Failed)
+    }
+}
+
+/// DeepSeek 工作区与子 WebView 的全量快照(事件 app://dsh-view-state + get_dsh_view_state)。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DshViewSnapshot {
+    pub workspace: Workspace,
+    pub status: DshViewStatus,
+    pub url: Option<String>,
+    pub error: Option<String>,
+    /// 是否存在「成功后自动进入 DeepSeek」的 pending 意图(accepted ≠ success)。
+    pub pending_enter: bool,
+    /// 是否可以返回启动器(workspace 为 dsh 时恒 true)。
+    pub can_back_to_launcher: bool,
+    /// 是否可以重试/重连。
+    pub can_retry: bool,
+    pub can_reconnect: bool,
+}
+
 /// 事件名(与前端 EVENTS 常量对齐)。M2 bridge 开始使用,届时移除 allow。
 pub const EVENT_STATE_CHANGED: &str = "app://state-changed";
 pub const EVENT_LOG_APPENDED: &str = "app://log-appended";
@@ -349,6 +452,8 @@ pub const EVENT_LOG_APPENDED: &str = "app://log-appended";
 pub const EVENT_OPEN_PAGE: &str = "app://open-page";
 /// 桌面偏好已变更(Renderer 应用主题等)。
 pub const EVENT_PREFERENCES_CHANGED: &str = "app://preferences-changed";
+/// DeepSeek 工作区/子 WebView 状态变更。
+pub const EVENT_DSH_VIEW_STATE: &str = "app://dsh-view-state";
 
 impl AppSnapshot {
     /// M1 mock:空闲快照(M2 由 bridge 提供真实数据)。
@@ -499,6 +604,50 @@ mod tests {
     }
 
     #[test]
+    fn dsh_view_snapshot_serde_camel() {
+        let s = DshViewSnapshot {
+            workspace: Workspace::Dsh,
+            status: DshViewStatus::Ready,
+            url: Some("http://127.0.0.1:3080/".into()),
+            error: None,
+            pending_enter: false,
+            can_back_to_launcher: true,
+            can_retry: true,
+            can_reconnect: true,
+        };
+        let j = serde_json::to_string(&s).unwrap();
+        assert!(j.contains("\"workspace\":\"dsh\""), "{j}");
+        assert!(j.contains("\"status\":\"ready\""), "{j}");
+        assert!(j.contains("\"pendingEnter\":false"), "{j}");
+        assert!(j.contains("\"canBackToLauncher\":true"), "{j}");
+        let back: DshViewSnapshot = serde_json::from_str(&j).unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn dsh_view_status_serde_and_predicates() {
+        assert_eq!(
+            serde_json::to_string(&DshViewStatus::NotCreated).unwrap(),
+            r#""not_created""#
+        );
+        assert_eq!(
+            serde_json::to_string(&DshViewStatus::Disconnected).unwrap(),
+            r#""disconnected""#
+        );
+        assert!(DshViewStatus::Loading.is_showable());
+        assert!(DshViewStatus::Ready.is_showable());
+        assert!(!DshViewStatus::NotCreated.is_showable());
+        assert!(!DshViewStatus::Creating.is_showable());
+        assert!(DshViewStatus::Disconnected.is_terminal_failure());
+        assert!(DshViewStatus::Failed.is_terminal_failure());
+        assert!(!DshViewStatus::Ready.is_terminal_failure());
+        assert_eq!(
+            serde_json::to_string(&Workspace::Launcher).unwrap(),
+            r#""launcher""#
+        );
+    }
+
+    #[test]
     fn snapshot_roundtrip_with_operation_and_disabled() {
         let mut s = AppSnapshot::mock_idle();
         s.operation = Some(OperationSnapshot {
@@ -520,5 +669,49 @@ mod tests {
         let back: AppSnapshot = serde_json::from_str(&j).unwrap();
         assert_eq!(back, s);
         assert!(j.contains("\"operationId\":3"), "{j}");
+    }
+
+    #[test]
+    fn tool_runtime_serde_camel_and_lowercase() {
+        let t = ToolRuntime {
+            version: Some("v24.9.0".into()),
+            source: Some(ToolSource::Managed),
+            path: Some("/tmp/toolchains/node/v24.9.0/bin/node".into()),
+            status: ToolCheck::Detected,
+            verified: true,
+            hint: None,
+            managed_available: true,
+        };
+        let j = serde_json::to_string(&t).unwrap();
+        assert!(j.contains("\"version\":\"v24.9.0\""), "{j}");
+        assert!(j.contains("\"source\":\"managed\""), "{j}");
+        assert!(j.contains("\"status\":\"detected\""), "{j}");
+        assert!(j.contains("\"managedAvailable\":true"), "{j}");
+        let back: ToolRuntime = serde_json::from_str(&j).unwrap();
+        assert_eq!(back, t);
+
+        // 系统工具:verified 恒 false,来源 system
+        let sys = ToolRuntime {
+            version: Some("2.47.0".into()),
+            source: Some(ToolSource::System),
+            path: Some("/usr/bin/git".into()),
+            status: ToolCheck::Detected,
+            verified: false,
+            hint: None,
+            managed_available: false,
+        };
+        let js = serde_json::to_string(&sys).unwrap();
+        assert!(js.contains("\"source\":\"system\""), "{js}");
+        assert!(js.contains("\"verified\":false"), "{js}");
+        assert!(js.contains("\"managedAvailable\":false"), "{js}");
+        let back: ToolRuntime = serde_json::from_str(&js).unwrap();
+        assert_eq!(back, sys);
+
+        assert!(!sys.is_missing());
+        let missing = ToolRuntime {
+            status: ToolCheck::Missing,
+            ..sys
+        };
+        assert!(missing.is_missing());
     }
 }

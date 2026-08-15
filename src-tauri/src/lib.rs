@@ -15,6 +15,7 @@ mod commands;
 pub mod config;
 pub mod contract;
 pub mod download;
+pub mod dsh_view;
 mod lifecycle;
 pub mod log_hub;
 mod migration;
@@ -86,6 +87,11 @@ pub fn run() {
             commands::open_chat,
             commands::close_chat,
             commands::get_chat_state,
+            commands::open_dsh_workspace,
+            commands::back_to_launcher,
+            commands::retry_dsh_view,
+            commands::set_workspace,
+            commands::get_dsh_view_state,
         ])
         .setup(move |app| {
             let app_handle = app.handle().clone();
@@ -171,6 +177,7 @@ pub fn run() {
             ));
             app.manage(state.clone());
             app.manage(Arc::new(chat::ChatManager::new()));
+            app.manage(Arc::new(dsh_view::DshViewManager::new()));
 
             // 迁移旧 Node daemon(幂等):终止旧 daemon、清理 token、记录版本
             let report = migration::run(&state.log_hub);
@@ -182,10 +189,10 @@ pub fn run() {
             if let Some(m) = state.supervisor.recall() {
                 let cmd = crate::services::supervisor::process_cmdline(m.pid);
                 let is_dsh = cmd.is_some_and(|c| c.contains("dsh web") || c.contains("dsh"));
-                let on_port = state
-                    .supervisor
-                    .web_pid()
-                    .is_some_and(|_| config::probe_port("127.0.0.1", config::load().port));
+                let on_port = crate::services::supervisor::port_holder_pid(config::load().port)
+                    .is_some_and(|holder| {
+                        crate::services::supervisor::process_descends_from(holder, m.pid)
+                    });
                 if is_dsh && on_port {
                     log_hub.append(
                         "launcher",
@@ -228,6 +235,10 @@ pub fn run() {
             // 应用偏好副作用(autostart 同步、托盘可见性)
             lifecycle::apply_preferences(&app_handle);
 
+            // 启动时若发现受管 DSH 已正常运行,自动恢复并进入 DeepSeek 工作区
+            // (保留返回启动器入口;窗口外壳仍由主 WebView 提供)
+            dsh_view::maybe_enter_on_boot(&app_handle);
+
             // 静默启动:偏好开启时首帧隐藏窗口(托盘可召回)
             let prefs = state.preferences.lock().unwrap().clone();
             if prefs.silent_startup {
@@ -242,8 +253,17 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                lifecycle::on_close_requested(window.app_handle(), window, api);
+            match event {
+                WindowEvent::CloseRequested { api, .. } => {
+                    lifecycle::on_close_requested(window.app_handle(), window, api);
+                }
+                // 窗口尺寸/位置/DPI 变化 → 重排 dsh-content 子 WebView(标题栏以下)
+                WindowEvent::Resized(_)
+                | WindowEvent::Moved(_)
+                | WindowEvent::ScaleFactorChanged { .. } => {
+                    dsh_view::relayout(window.app_handle());
+                }
+                _ => {}
             }
         })
         .build(tauri::generate_context!())

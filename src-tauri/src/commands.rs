@@ -239,3 +239,42 @@ pub fn close_chat(app: AppHandle) {
 pub fn get_chat_state(app: AppHandle) -> crate::chat::ChatStateSnapshot {
     app.state::<Arc<crate::chat::ChatManager>>().current_state()
 }
+
+// ── M4.1:主窗口内 DeepSeek 工作区(dsh-content 子 WebView) ──
+
+/// 打开 DeepSeek 工作区:服务未就绪时先启动并异步等待,就绪后在当前主窗口切换。
+#[tauri::command]
+pub fn open_dsh_workspace(app: AppHandle) -> crate::contract::DshViewSnapshot {
+    crate::dsh_view::open_dsh_workspace(&app)
+}
+
+/// 返回启动器工作区(子 WebView 隐藏,会话保持,不销毁不刷新)。
+#[tauri::command]
+pub fn back_to_launcher(app: AppHandle) -> crate::contract::DshViewSnapshot {
+    crate::dsh_view::back_to_launcher(&app)
+}
+
+/// 重试/重连 DeepSeek 工作区(断线/失败后)。
+#[tauri::command]
+pub fn retry_dsh_view(app: AppHandle) -> crate::contract::DshViewSnapshot {
+    crate::dsh_view::retry_dsh_view(&app)
+}
+
+/// 工作区切换(launcher|dsh);幂等,连续点击不重复创建。
+#[tauri::command]
+pub fn set_workspace(
+    app: AppHandle,
+    workspace: crate::contract::Workspace,
+) -> crate::contract::DshViewSnapshot {
+    match workspace {
+        crate::contract::Workspace::Launcher => crate::dsh_view::back_to_launcher(&app),
+        crate::contract::Workspace::Dsh => crate::dsh_view::open_dsh_workspace(&app),
+    }
+}
+
+/// 当前 DeepSeek 工作区/子 WebView 状态(事件 app://dsh-view-state 之外的一次性查询)。
+#[tauri::command]
+pub fn get_dsh_view_state(app: AppHandle) -> crate::contract::DshViewSnapshot {
+    app.state::<Arc<crate::dsh_view::DshViewManager>>()
+        .current_state()
+}

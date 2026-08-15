@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "dsh-launcher 主窗口最小权限集(无通用 shell 权限)",
-  "windows": [
+  "description": "dsh-launcher 主窗口最小权限集(无通用 shell 权限);精确匹配主 WebView,子 WebView(dsh-content)零权限",
+  "webviews": [
     "main"
   ],
   "permissions": [
@@ -23,6 +23,10 @@
     "autostart:allow-disable",
     "autostart:allow-is-enabled",
     "core:window:allow-start-dragging",
-    "core:window:allow-start-resize-dragging"
+    "core:window:allow-start-resize-dragging",
+    "core:window:allow-maximize",
+    "core:window:allow-unmaximize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-is-maximized"
   ]
 }

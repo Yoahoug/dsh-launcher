@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { desktopApi, isTauri } from '@/lib/desktop-api'
 import { mockApi } from '@/lib/mock'
-import type { AppSnapshot, DesktopPreferences, DesktopSnapshot, PageName } from '@/types/schema'
+import type {
+  AppSnapshot,
+  DesktopPreferences,
+  DesktopSnapshot,
+  DshViewSnapshot,
+  PageName,
+} from '@/types/schema'
 
 const api = isTauri() ? desktopApi : mockApi
 
@@ -68,6 +74,28 @@ export function usePage(initial: PageName = 'dashboard'): [PageName, (p: PageNam
   }, [])
 
   return [page, setPage]
+}
+
+/** DeepSeek 工作区/子 WebView 状态:首次拉取 + 订阅 dsh-view-state 事件。 */
+export function useDshViewState(): DshViewSnapshot | null {
+  const [dsh, setDsh] = useState<DshViewSnapshot | null>(null)
+  const mounted = useRef(true)
+
+  useEffect(() => {
+    mounted.current = true
+    void api.getDshViewState().then((s) => {
+      if (mounted.current) setDsh(s)
+    })
+    const unsub = api.onDshViewState((s) => {
+      if (mounted.current) setDsh(s)
+    })
+    return () => {
+      mounted.current = false
+      void unsub.then((fn) => fn())
+    }
+  }, [])
+
+  return dsh
 }
 
 /** 执行后端动作(返回值供调用方提示)。 */

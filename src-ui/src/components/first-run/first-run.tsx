@@ -52,7 +52,7 @@ export function FirstRunPage({ onDone, onOpenSettings }: { onDone: () => void; o
     try {
       const r = await api.runAction('install-node')
       if (r.ok) {
-        toast({ kind: 'success', title: '托管 Node 安装完成' })
+        toast({ kind: 'info', title: '托管 Node 安装任务已受理' })
         await runEnvCheck()
       } else {
         toast({ kind: 'error', title: '安装失败', detail: r.reason })
@@ -88,7 +88,7 @@ export function FirstRunPage({ onDone, onOpenSettings }: { onDone: () => void; o
           <img src={logoUrl} alt="" className="size-10 rounded-xl" />
           <div>
             <h1 className="text-xl font-semibold">欢迎使用 DSH Launcher</h1>
-            <p className="mt-0.5 text-xs text-muted-foreground">DeepSeek Harness 桌面启动器 · v0.4.0</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">DeepSeek Harness 桌面启动器 · v0.5.0</p>
           </div>
         </div>
         <p className="mt-4 text-sm leading-relaxed text-muted-foreground">
@@ -147,9 +147,9 @@ export function FirstRunPage({ onDone, onOpenSettings }: { onDone: () => void; o
               <motion.div key="env" {...STEP_ANIM}>
                 <div className="space-y-3 rounded-xl border border-border bg-card p-4">
                   <EnvRow label="仓库" value={env.repoUsable.ok ? '可用 ✓' : `不可用:${env.repoUsable.reason ?? '未知'}`} ok={env.repoUsable.ok} />
-                  <EnvRow label="Node" value={env.node.current || '未找到'} ok={env.node.inRange} />
-                  <EnvRow label="pnpm" value={env.pnpm ?? '未找到'} ok={Boolean(env.pnpm)} />
-                  <EnvRow label="git" value={env.git ?? '未找到'} ok={Boolean(env.git)} />
+                  <EnvRow label="Node" value={env.node.version ?? '未找到'} ok={env.node.status === 'detected'} />
+                  <EnvRow label="pnpm" value={env.pnpm.version ?? '未找到'} ok={env.pnpm.status === 'detected'} />
+                  <EnvRow label="git" value={env.git.version ?? '未找到'} ok={env.git.status === 'detected'} />
                   <EnvRow label="dist" value={env.distBuilt === null ? '未知' : env.distBuilt ? '已构建 ✓' : '未构建(将自动构建)'} ok={env.distBuilt !== false} />
                   {env.warnings.map((w, i) => (
                     <p key={i} className="text-xs text-amber-500">⚠ {w}</p>
@@ -163,7 +163,7 @@ export function FirstRunPage({ onDone, onOpenSettings }: { onDone: () => void; o
                     <Button variant="ghost" size="sm" onClick={() => setStep('repo')}>
                       修改仓库
                     </Button>
-                    {!env?.node.inRange && !env?.node.current && (
+                    {env.node.status !== 'detected' && (
                       <Button variant="outline" size="sm" onClick={() => void installNode()} disabled={installing}>
                         {installing ? <Loader2 className="animate-spin" /> : null}
                         安装托管 Node 24

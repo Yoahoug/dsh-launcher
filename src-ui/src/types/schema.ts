@@ -142,6 +142,13 @@ export interface InstalledComponent {
   source: string
 }
 
+/** catalog 当前可安装的托管版本(「可选托管工具链」展示;Windows 才有 MinGit)。 */
+export interface OfferedVersions {
+  node: string
+  git: string | null
+  pnpm: string
+}
+
 /** 托管工具链安装快照。 */
 export interface InstallationSnapshot {
   catalogVersion: number
@@ -149,6 +156,8 @@ export interface InstallationSnapshot {
   git: InstalledComponent | null
   pnpm: InstalledComponent | null
   installedAt: number | null
+  /** catalog 当前提供的托管版本(读取时按当前 catalog 补齐)。 */
+  offered: OfferedVersions
 }
 
 /** 性能测量点。 */
@@ -165,6 +174,31 @@ export interface ChatStateSnapshot {
   status: ChatStatus
   url: string | null
   error: string | null
+}
+
+/** 主窗口内工作区:launcher=启动器 / dsh=DeepSeek 完整工作区(子 WebView)。 */
+export type Workspace = 'launcher' | 'dsh'
+
+/** dsh-content 子 WebView 生命周期状态;只有 ready 才可展示工作区。 */
+export type DshViewStatus =
+  | 'not_created'
+  | 'creating'
+  | 'loading'
+  | 'ready'
+  | 'disconnected'
+  | 'failed'
+
+/** DeepSeek 工作区/子 WebView 全量快照(app://dsh-view-state + get_dsh_view_state)。 */
+export interface DshViewSnapshot {
+  workspace: Workspace
+  status: DshViewStatus
+  url: string | null
+  error: string | null
+  /** 是否存在「成功后自动进入 DeepSeek」的 pending 意图(accepted ≠ success)。 */
+  pendingEnter: boolean
+  canBackToLauncher: boolean
+  canRetry: boolean
+  canReconnect: boolean
 }
 
 export interface LogEntry {
@@ -217,21 +251,39 @@ export interface DesktopSnapshot {
   version: string
 }
 
-export interface EnvironmentNode {
-  current: string
-  inRange: boolean
-  used: string | null
-  usedVersion: string | null
-  usedSource: string | null
+/** 工具链来源:系统安装 / Launcher 托管 / 项目本地·Corepack。 */
+export type ToolSource = 'system' | 'managed' | 'corepack'
+
+/** 工具链组件检测状态。 */
+export type ToolCheck = 'detected' | 'incompatible' | 'missing'
+
+/** 单个工具链组件的运行时快照(当前实际生效;版本/来源/路径/检测状态)。 */
+export interface ToolRuntime {
+  /** 实际生效版本(v24.9.0 / 11.21.0 / 2.47.0);null = 未安装。 */
+  version: string | null
+  /** 来源;null = 未安装。 */
+  source: ToolSource | null
+  /** 实际生效可执行文件绝对路径;null = 未安装。 */
+  path: string | null
+  /** 检测状态。 */
+  status: ToolCheck
+  /** 是否经签名 catalog 下载并 SHA-256 校验。仅托管工具可为 true;系统工具恒 false。 */
+  verified: boolean
+  /** 明确提示/推荐(不兼容或缺失时给出可执行建议)。 */
+  hint: string | null
+  /** 是否存在可切换的托管版本(catalog 有当前平台条目)。 */
+  managedAvailable: boolean
 }
 
 export interface EnvironmentSnapshot {
   repoPath: string
   repoUsable: { ok: boolean; reason?: string }
   distBuilt: boolean | null
-  node: EnvironmentNode
-  pnpm: string | null
-  git: string | null
+  /** 当前生效平台(macos / windows / linux;据此决定 MinGit 是否展示)。 */
+  platform: string
+  node: ToolRuntime
+  pnpm: ToolRuntime
+  git: ToolRuntime
   warnings: string[]
 }
 
@@ -291,4 +343,5 @@ export const EVENTS = {
   PREFERENCES_CHANGED: 'app://preferences-changed',
   PERF_METRICS: 'app://perf-metrics',
   CHAT_STATE: 'app://chat-state',
+  DSH_VIEW_STATE: 'app://dsh-view-state',
 } as const

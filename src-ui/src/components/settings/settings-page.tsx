@@ -279,13 +279,6 @@ export function SettingsPage({ onBack: _onBack }: { onBack: () => void }) {
                     label="静默启动"
                   />
                 </Field>
-                <Field label="就绪后打开 dsh" hint="启动完成后自动打开浏览器">
-                  <Switch
-                    checked={engine.openBrowser}
-                    onCheckedChange={(v) => setEngineField('openBrowser', v)}
-                    label="就绪后打开 dsh"
-                  />
-                </Field>
                 <Field label="停止并退出前确认" hint="托盘「停止服务并退出」二次确认">
                   <Switch
                     checked={prefs.confirmStopAndQuit}
@@ -325,7 +318,7 @@ export function SettingsPage({ onBack: _onBack }: { onBack: () => void }) {
                   >
                     重新检测
                   </Button>
-                  <Button variant="outline" size="sm" onClick={() => void api.runAction('install-node').then((r) => r.ok ? toast({ kind: 'success', title: '托管 Node 安装完成' }) : toast({ kind: 'error', title: '安装失败', detail: r.reason }))}>
+                  <Button variant="outline" size="sm" onClick={() => void api.runAction('install-node').then((r) => r.ok ? toast({ kind: 'info', title: '托管 Node 安装任务已受理' }) : toast({ kind: 'error', title: '安装失败', detail: r.reason }))}>
                     安装托管 Node
                   </Button>
                 </div>
@@ -385,9 +378,9 @@ function RuntimeCard({ refreshKey }: { refreshKey: number }) {
     void api.inspectEnvironment().then((e) => {
       if (!mounted) return
       setEnv({
-        node: `${e.node.current}${e.node.inRange ? '' : ' (版本不在范围内)'}`,
-        pnpm: e.pnpm ?? '未找到',
-        git: e.git ?? '未找到',
+        node: `${e.node.version ?? '未找到'}${e.node.status === 'detected' ? '' : ' (不可用)'}`,
+        pnpm: `${e.pnpm.version ?? '未找到'}${e.pnpm.status === 'detected' ? '' : ' (不可用)'}`,
+        git: `${e.git.version ?? '未找到'}${e.git.status === 'detected' ? '' : ' (不可用)'}`,
         dist: e.distBuilt === null ? '未知' : e.distBuilt ? '已构建' : '未构建',
         warnings: e.warnings,
       })

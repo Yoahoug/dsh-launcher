@@ -172,8 +172,19 @@ fn version_dirs() -> Vec<PathBuf> {
 
 /// 探测 node 版本(node --version),超时/失败返回 None。
 pub fn probe_version(bin: &Path) -> Option<String> {
+    probe_version_with(bin, &std::collections::HashMap::new())
+}
+
+/// 探测版本(带注入环境变量;在隔离目录运行,避免命中仓库 packageManager 语义)。
+/// 供 pnpm 等需要注入 PATH 的组件使用(托管 shim 依赖托管 node)。
+pub fn probe_version_with(
+    bin: &Path,
+    env: &std::collections::HashMap<String, String>,
+) -> Option<String> {
     let out = std::process::Command::new(bin)
         .arg("--version")
+        .current_dir(std::env::temp_dir())
+        .envs(env)
         .output()
         .ok()?;
     if !out.status.success() {
@@ -184,6 +195,21 @@ pub fn probe_version(bin: &Path) -> Option<String> {
         Some(v)
     } else {
         None
+    }
+}
+
+/// 系统存在但不在 dsh 范围(^22.19 || >=24)的 Node;返回 (bin, 版本)。
+/// 托管目录中的 Node 不在此列(由 resolve_dsh_node 优先处理)。
+pub fn incompatible_node() -> Option<(PathBuf, String)> {
+    let bin = resolve_executable("node")?;
+    if crate::toolchain::is_managed_path(&bin) {
+        return None;
+    }
+    let v = probe_version(&bin)?;
+    if node_in_range(&v) {
+        None
+    } else {
+        Some((bin, v))
     }
 }
 
