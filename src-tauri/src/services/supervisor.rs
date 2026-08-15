@@ -610,7 +610,6 @@ pub fn port_holder_pid(port: u16) -> Option<u32> {
     }
     #[cfg(windows)]
     {
-        use std::io::BufRead as _;
         let out = std::process::Command::new("netstat")
             .args(["-ano"])
             .output()

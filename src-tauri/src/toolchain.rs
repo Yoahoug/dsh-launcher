@@ -396,11 +396,14 @@ fn write_pnpm_shims(dir: &Path) -> Result<(), String> {
     if !entry.is_file() {
         return Err("pnpm 缺少 bin/pnpm.cjs(入口文件)".into());
     }
-    if cfg!(windows) {
+    #[cfg(windows)]
+    {
         let cmd = dir.join("pnpm.cmd");
         let content = "@echo off\r\nnode \"%~dp0bin\\pnpm.cjs\" %*\r\n";
         std::fs::write(&cmd, content).map_err(|e| format!("写 pnpm.cmd 失败:{e}"))?;
-    } else {
+    }
+    #[cfg(unix)]
+    {
         let sh = dir.join("pnpm");
         let content = "#!/bin/sh\nexec node \"$(dirname \"$0\")/bin/pnpm.cjs\" \"$@\"\n";
         std::fs::write(&sh, content).map_err(|e| format!("写 pnpm shim 失败:{e}"))?;
