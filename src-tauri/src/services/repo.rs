@@ -4,7 +4,9 @@ use crate::log_hub::LogHub;
 use crate::services::runtime::Tools;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+const STATUS_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// git 命令结果。
 #[derive(Debug, Clone)]
@@ -81,16 +83,44 @@ impl RepoService {
             .as_ref()
             .ok_or_else(|| "未找到 git".to_string())?
             .clone();
-        let out = std::process::Command::new(&git)
+        let mut child = std::process::Command::new(&git)
             .args(args)
             .current_dir(cwd)
             .envs(self.tools.env())
-            .output()
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
             .map_err(|e| format!("无法执行 git:{e}"))?;
-        if !out.status.success() {
+
+        let deadline = Instant::now() + STATUS_COMMAND_TIMEOUT;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                Ok(None) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!(
+                        "git 状态查询超时({} 秒)",
+                        STATUS_COMMAND_TIMEOUT.as_secs()
+                    ));
+                }
+                Err(e) => return Err(format!("git wait 失败:{e}")),
+            }
+        };
+        if !status.success() {
             return Ok(String::new());
         }
-        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        let mut out = String::new();
+        if let Some(mut stdout) = child.stdout.take() {
+            use std::io::Read;
+            stdout
+                .read_to_string(&mut out)
+                .map_err(|e| format!("读取 git 输出失败:{e}"))?;
+        }
+        Ok(out.trim().to_string())
     }
 
     pub fn current_branch(&self, cwd: &str) -> String {

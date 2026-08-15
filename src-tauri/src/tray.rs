@@ -112,13 +112,19 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     )
 }
 
-/// 刷新托盘菜单(状态变化时调用;无托盘时静默返回)。
-pub fn refresh(app: &AppHandle) {
+/// 在主线程刷新托盘菜单(状态变化时调用;无托盘时静默返回)。
+fn refresh_now(app: &AppHandle) {
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         if let Ok(menu) = build_menu(app) {
             let _ = tray.set_menu(Some(menu));
         }
     }
+}
+
+/// 托盘属于 AppKit UI；后台启动流程只投递刷新，不同步阻塞当前线程。
+pub fn refresh(app: &AppHandle) {
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || refresh_now(&handle));
 }
 
 /// 创建托盘(偏好 showTrayIcon=false 时创建但隐藏,用户可在设置里恢复)。
@@ -161,7 +167,7 @@ pub fn setup(app: &AppHandle) -> tauri::Result<TrayIcon<tauri::Wry>> {
                 show_main_window(app);
             }
             "quit" => crate::lifecycle::quit_launcher(app),
-            "stop-and-quit" => crate::lifecycle::stop_and_quit(app),
+            "stop-and-quit" => crate::lifecycle::request_stop_and_quit(app),
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {

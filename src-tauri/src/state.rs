@@ -38,6 +38,17 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// 更新快照并返回独立副本。调用方拿到结果时互斥锁必须已经释放，
+/// 后续事件广播、托盘菜单构建等操作才可以安全地再次读取状态。
+fn apply_snapshot_update(
+    snapshot: &Mutex<AppSnapshot>,
+    partial: impl FnOnce(&mut AppSnapshot),
+) -> AppSnapshot {
+    let mut snap = snapshot.lock().unwrap();
+    partial(&mut snap);
+    snap.clone()
+}
+
 impl AppState {
     pub fn new(log_hub: Arc<LogHub>, supervisor: Arc<Supervisor>, tools: Tools) -> Self {
         let prefs = preferences::load_and_migrate();
@@ -58,9 +69,10 @@ impl AppState {
 
     /// 用部分字段更新快照并广播事件。
     pub fn set_snapshot(&self, app: &AppHandle, partial: impl FnOnce(&mut AppSnapshot)) {
-        let mut snap = self.snapshot.lock().unwrap();
-        partial(&mut snap);
-        let _ = app.emit(EVENT_STATE_CHANGED, &*snap);
+        // 先完成状态更新并释放锁。托盘刷新会再次读取 snapshot，若持锁调用会自锁，
+        // 表现为 UI 已收到 starting 事件、随后启动流程和设置 IPC 永久卡住。
+        let snap = apply_snapshot_update(&self.snapshot, partial);
+        let _ = app.emit(EVENT_STATE_CHANGED, &snap);
         crate::tray::refresh(app);
     }
 
@@ -79,8 +91,8 @@ impl AppState {
     pub fn refresh_repo(&self) {
         let settings = config::load();
         let usable = config::repo_usable(&settings.repo_path);
-        let mut snap = self.snapshot.lock().unwrap();
         if !usable.ok {
+            let mut snap = self.snapshot.lock().unwrap();
             snap.repo = RepoSnapshot {
                 branch: String::new(),
                 head: String::new(),
@@ -93,8 +105,12 @@ impl AppState {
             };
             return;
         }
+        // Git/TCC 文件访问可能耗时，不能在外部命令执行期间占用 snapshot；
+        // 否则启动/停止动作会在 set_snapshot 中被无关的仓库探测阻塞。
+        let sync_at = self.snapshot.lock().unwrap().repo.sync_at;
         let repo = RepoService::new(self.log_hub.clone(), self.tools.lock().unwrap().clone());
-        snap.repo = repo.status(&settings.repo_path, snap.repo.sync_at);
+        let repo_snapshot = repo.status(&settings.repo_path, sync_at);
+        self.snapshot.lock().unwrap().repo = repo_snapshot;
     }
 
     pub fn refresh_repo_emit(&self, app: &AppHandle) {
@@ -1014,5 +1030,23 @@ impl AppState {
     /// 应用退出:detach(不停止 dsh)。
     pub fn on_app_exit(&self) {
         self.supervisor.detach();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_update_releases_lock_before_side_effects() {
+        let snapshot = Mutex::new(AppSnapshot::mock_idle());
+        let updated = apply_snapshot_update(&snapshot, |s| {
+            s.state = LauncherState::Starting;
+            s.phase = "启动中".into();
+        });
+
+        assert_eq!(updated.state, LauncherState::Starting);
+        assert_eq!(updated.phase, "启动中");
+        assert!(snapshot.try_lock().is_ok(), "快照更新后不应继续持锁");
     }
 }

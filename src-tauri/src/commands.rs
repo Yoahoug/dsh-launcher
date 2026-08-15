@@ -3,7 +3,7 @@ use crate::contract::{
     ActionAccepted, AppSnapshot, DesktopPreferences, DesktopSnapshot, EnvironmentSnapshot, LogPage,
     SettingsSnapshot, UpdateResult,
 };
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 use crate::state::AppState;
 use std::sync::Arc;
@@ -90,42 +90,41 @@ pub fn save_preferences(
 
 /// 危险动作:先弹原生确认框,确认后执行。stop-and-quit 走完整退出流程。
 #[tauri::command]
-pub fn confirm_and_run(
-    app: AppHandle,
-    action: String,
-    state: State<'_, Arc<AppState>>,
-) -> ActionAccepted {
+pub async fn confirm_and_run(app: AppHandle, action: String) -> Result<ActionAccepted, String> {
+    // 异步 command 不能跨 await 持有带请求生命周期的 State<'_>，
+    // 从 AppHandle 获取独立 Arc 后再打开原生对话框。
+    let state = app.state::<Arc<AppState>>().inner().clone();
     if action == "stop-and-quit" {
-        if crate::lifecycle::confirm_stop_and_quit_blocking(&app) {
+        if crate::lifecycle::confirm_stop_and_quit(&app).await {
             crate::lifecycle::stop_and_quit(&app);
-            return ActionAccepted {
+            return Ok(ActionAccepted {
                 ok: true,
                 reason: Some("已停止并退出".into()),
                 aborted: None,
                 already: None,
-            };
+            });
         }
-        return ActionAccepted {
+        return Ok(ActionAccepted {
             ok: false,
             reason: Some("已取消".into()),
             aborted: Some(true),
             already: None,
-        };
+        });
     }
     let (title, message) = match action.as_str() {
         "stop" => ("停止 dsh", "确定要停止 dsh web 吗?"),
         "rebuild" => ("重建并重启", "确定要重建并重启 dsh 吗?服务将短暂停止。"),
-        _ => return state.run_action(&app, &action),
+        _ => return Ok(state.run_action(&app, &action)),
     };
-    if !crate::lifecycle::confirm_blocking(&app, title, message) {
-        return ActionAccepted {
+    if !crate::lifecycle::confirm(&app, title, message).await {
+        return Ok(ActionAccepted {
             ok: false,
             reason: Some("已取消".into()),
             aborted: Some(true),
             already: None,
-        };
+        });
     }
-    state.run_action(&app, &action)
+    Ok(state.run_action(&app, &action))
 }
 
 /// 普通退出:仅 detach,不停止 dsh。
@@ -136,19 +135,17 @@ pub fn quit_app(app: AppHandle) {
 
 /// 原生目录选择器(First-run / Settings 选择仓库)。
 #[tauri::command]
-pub fn pick_directory(app: AppHandle) -> Option<String> {
+pub async fn pick_directory(app: AppHandle) -> Option<String> {
     use tauri_plugin_dialog::DialogExt;
     let dialog = app.dialog();
-    let (tx, rx) = std::sync::mpsc::channel::<Option<String>>();
+    let (tx, mut rx) = tauri::async_runtime::channel::<Option<String>>(1);
     dialog
         .file()
         .set_title("选择仓库目录")
         .pick_folder(move |res| {
-            let _ = tx.send(res.map(|p| p.to_string()));
+            let _ = tx.try_send(res.map(|p| p.to_string()));
         });
-    rx.recv_timeout(std::time::Duration::from_secs(300))
-        .ok()
-        .flatten()
+    rx.recv().await.flatten()
 }
 
 #[tauri::command]

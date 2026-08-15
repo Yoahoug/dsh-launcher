@@ -72,41 +72,33 @@ pub fn quit_launcher(app: &AppHandle) {
     app.exit(0);
 }
 
-/// 原生确认框(通用):返回用户是否确认。
-pub fn confirm_blocking(app: &AppHandle, title: &str, message: &str) -> bool {
+/// 原生确认框(通用):回调通过异步 channel 返回，绝不阻塞 WebKit/AppKit。
+pub async fn confirm(app: &AppHandle, title: &str, message: &str) -> bool {
     use tauri_plugin_dialog::DialogExt;
     let dialog = app.dialog();
-    let (tx, rx) = std::sync::mpsc::channel::<bool>();
+    let (tx, mut rx) = tauri::async_runtime::channel::<bool>(1);
     dialog
         .message(message)
         .title(title)
         .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCancel)
         .show(move |yes| {
-            let _ = tx.send(yes);
+            let _ = tx.try_send(yes);
         });
-    rx.recv_timeout(Duration::from_secs(300)).unwrap_or(false)
+    rx.recv().await.unwrap_or(false)
 }
 
 /// 原生确认框:停止服务并退出。
-pub fn confirm_stop_and_quit_blocking(app: &AppHandle) -> bool {
-    confirm_blocking(
+pub async fn confirm_stop_and_quit(app: &AppHandle) -> bool {
+    confirm(
         app,
         "停止服务并退出",
         "确定要停止 dsh 并退出 DSH Launcher 吗?",
     )
+    .await
 }
 
-/// 停止服务并退出:确认(偏好开关)→ stop → 等待空闲 → detach → 退出。
+/// 已确认后停止服务并退出:stop → 等待空闲 → detach → 退出。
 pub fn stop_and_quit(app: &AppHandle) {
-    let prefs = app
-        .state::<Arc<AppState>>()
-        .preferences
-        .lock()
-        .unwrap()
-        .clone();
-    if prefs.confirm_stop_and_quit && !confirm_stop_and_quit_blocking(app) {
-        return;
-    }
     let state = app.state::<Arc<AppState>>();
     let res = state.run_action(app, "stop");
     if !res.ok {
@@ -125,6 +117,22 @@ pub fn stop_and_quit(app: &AppHandle) {
             std::thread::sleep(Duration::from_millis(100));
         }
         quit_launcher(&handle);
+    });
+}
+
+/// 托盘入口:按偏好异步确认，避免在 AppKit 菜单回调中同步等待对话框。
+pub fn request_stop_and_quit(app: &AppHandle) {
+    let confirm_first = app
+        .state::<Arc<AppState>>()
+        .preferences
+        .lock()
+        .unwrap()
+        .confirm_stop_and_quit;
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if !confirm_first || confirm_stop_and_quit(&handle).await {
+            stop_and_quit(&handle);
+        }
     });
 }
 

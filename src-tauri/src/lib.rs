@@ -150,8 +150,11 @@ pub fn run() {
                 log::error!("托盘初始化失败: {e}");
             }
 
-            // 仓库状态快照(首帧)
-            state.refresh_repo_emit(&app_handle);
+            // 仓库状态快照不能阻塞 AppKit 首帧；桌面目录的 macOS 权限检查、
+            // Git 锁或异常仓库都可能让外部命令变慢。
+            let repo_state = state.clone();
+            let repo_app = app_handle.clone();
+            std::thread::spawn(move || repo_state.refresh_repo_emit(&repo_app));
 
             // 应用偏好副作用(autostart 同步、托盘可见性)
             lifecycle::apply_preferences(&app_handle);
