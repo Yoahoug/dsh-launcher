@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/button'
 import { operationLabel } from '@/lib/actions'
 import type { AppSnapshot } from '@/types/schema'
 
-/** 长任务状态横幅:显示 operationId/阶段/进度;可取消时提供取消按钮。
+/** 长任务状态横幅:显示 operationId/阶段/进度条(有 % 用确定进度,否则不定长动画)。
  *  只显示运行中的任务;终态成功由 toast/快照状态体现。 */
 export function OperationBanner({
   snap,
@@ -21,7 +21,7 @@ export function OperationBanner({
   return (
     <div
       data-tauri-drag-region="false"
-      className={`flex items-center gap-3 border-b px-4 py-2 text-[12px] ${
+      className={`border-b px-4 py-2 text-[12px] ${
         failed
           ? 'border-red-500/30 bg-red-500/10 text-red-500'
           : cancelled
@@ -29,24 +29,39 @@ export function OperationBanner({
             : 'border-blue-500/20 bg-blue-500/10 text-blue-600 dark:text-blue-400'
       }`}
     >
-      {failed ? (
-        <XCircle className="size-3.5 shrink-0" />
-      ) : cancelled ? (
-        <Ban className="size-3.5 shrink-0" />
-      ) : (
-        <Loader2 className="size-3.5 shrink-0 animate-spin" />
-      )}
-      <span className="min-w-0 flex-1 truncate">
-        {failed
-          ? `任务失败:${op.error ?? '未知错误'}`
-          : cancelled
-            ? op.error ?? '任务已取消(可重试,已完成的安全步骤不会重复)'
-            : `任务 #${op.operationId} · ${operationLabel(op.kind)} — ${op.stage}${op.progress != null ? ` ${op.progress}%` : ''}`}
-      </span>
-      {op.cancellable && !failed && !cancelled && (
-        <Button variant="ghost" size="sm" className="h-6 text-[12px]" onClick={onCancel}>
-          取消
-        </Button>
+      <div className="flex items-center gap-3">
+        {failed ? (
+          <XCircle className="size-3.5 shrink-0" />
+        ) : cancelled ? (
+          <Ban className="size-3.5 shrink-0" />
+        ) : (
+          <Loader2 className="size-3.5 shrink-0 animate-spin" />
+        )}
+        <span className="min-w-0 flex-1 truncate">
+          {failed
+            ? `任务失败:${op.error ?? '未知错误'}`
+            : cancelled
+              ? op.error ?? '任务已取消(可重试,已完成的安全步骤不会重复)'
+              : `任务 #${op.operationId} · ${operationLabel(op.kind)} — ${op.stage}${op.progress != null ? ` ${op.progress}%` : ''}`}
+        </span>
+        {op.cancellable && !failed && !cancelled && (
+          <Button variant="ghost" size="sm" className="h-6 text-[12px]" onClick={onCancel}>
+            取消
+          </Button>
+        )}
+      </div>
+      {/* 进度条:克隆/构建等阶段可见;有确定 % 时按比例,否则不定长动画 */}
+      {!failed && !cancelled && (
+        <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
+          {op.progress != null ? (
+            <div
+              className="h-full rounded-full bg-blue-500 transition-[width] duration-300"
+              style={{ width: `${Math.max(2, Math.min(100, op.progress))}%` }}
+            />
+          ) : (
+            <div className="animate-indeterminate h-full w-2/5 rounded-full bg-blue-500" />
+          )}
+        </div>
       )}
     </div>
   )

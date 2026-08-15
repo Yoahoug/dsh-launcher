@@ -208,6 +208,30 @@ pub fn dist_built(repo_path: &str) -> Option<bool> {
     }
 }
 
+/// 仓库是否缺少运行 dsh web 所需的构建产物:
+/// `apps/web/dist`(build:web)+ `packages/client/*/lib/client.js`(build:lib:client)。
+/// 只要任一缺失即视为需要(重新)构建,启动前自动补齐。
+pub fn repo_needs_build(repo_path: &str) -> bool {
+    if dist_built(repo_path) != Some(true) {
+        return true;
+    }
+    // 客户端 bundle 判定:packages/client 下至少有一个包已产出 lib/client.js
+    let client_root = Path::new(repo_path).join("packages/client");
+    if !client_root.is_dir() {
+        // 无 packages/client 目录(非预期项目结构)时以 dist 为准,不再追加构建
+        return false;
+    }
+    let any_built = std::fs::read_dir(&client_root)
+        .map(|rd| {
+            rd.flatten().filter(|e| e.path().is_dir()).any(|e| {
+                e.path().join("lib/client.js").is_file()
+                    || e.path().join("lib/client.mjs").is_file()
+            })
+        })
+        .unwrap_or(false);
+    !any_built
+}
+
 /// 端口是否被监听(127.0.0.1 connect 探测)。
 pub fn probe_port(host: &str, port: u16) -> bool {
     TcpStream::connect_timeout(
@@ -240,7 +264,7 @@ mod tests {
         let dir = temp_dir("missing");
         let s = load();
         assert_eq!(s.port, 3080);
-        assert_eq!(s.ready_timeout_ms, 120_000);
+        assert_eq!(s.ready_timeout_ms, 180_000);
         assert!(s.open_browser);
         let _ = std::fs::remove_dir_all(&dir);
     }

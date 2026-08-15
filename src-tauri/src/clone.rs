@@ -62,11 +62,30 @@ pub fn default_target_dir(current_repo_path: &str) -> String {
         }
     }
     let home = crate::config::home_dir();
-    let desktop = Path::new(&home).join("Desktop");
-    if desktop.is_dir() {
-        desktop.display().to_string()
-    } else {
+    if home.is_empty() {
+        return std::env::temp_dir().display().to_string();
+    }
+    #[cfg(windows)]
+    {
+        // OneDrive 重定向时真实桌面可能是 OneDrive\Desktop,两个都探测
+        for cand in [
+            Path::new(&home).join("Desktop"),
+            Path::new(&home).join("OneDrive").join("Desktop"),
+        ] {
+            if cand.is_dir() {
+                return cand.display().to_string();
+            }
+        }
         home
+    }
+    #[cfg(not(windows))]
+    {
+        let desktop = Path::new(&home).join("Desktop");
+        if desktop.is_dir() {
+            desktop.display().to_string()
+        } else {
+            home
+        }
     }
 }
 
@@ -212,7 +231,9 @@ pub fn run_cancellable(
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x00000008 | 0x08000000); // CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
+        // CREATE_NEW_PROCESS_GROUP(0x200)| CREATE_NO_WINDOW(0x08000000):
+        // 0x8 是 DETACHED_PROCESS,会让 cmd.exe 执行 .cmd(pnpm.cmd)时子进程输出丢失。
+        cmd.creation_flags(0x00000200 | 0x08000000); // CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
     }
     let mut child = cmd
         .spawn()
@@ -365,9 +386,63 @@ fn target_usable(target: &Path) -> Result<(), String> {
     }
     let mut entries = std::fs::read_dir(target).map_err(|e| format!("读取目标目录失败:{e}"))?;
     if entries.next().is_some() {
-        return Err("目标目录非空,绝不覆盖;请选择空目录或不存在的路径".into());
+        return Err("克隆位置已存在且非空,绝不覆盖;请更换放置位置或清理后重试".into());
     }
     Ok(())
+}
+
+/// 从 URL 推导仓库目录名(与 `git clone <url>` 的默认目录一致):
+/// `https://host/owner/repo.git` → `repo`;`git@host:owner/repo.git` → `repo`。
+fn repo_name_from_url(url: &str) -> Result<String, OperationError> {
+    let u = url.trim().trim_end_matches('/');
+    let path_part =
+        if u.contains('@') && u.contains(':') && !u.starts_with("ssh://") && !u.starts_with("http")
+        {
+            // scp-like:git@host:path/to/repo.git
+            u.split_once(':')
+                .map(|(_, p)| p.to_string())
+                .unwrap_or_else(|| u.to_string())
+        } else {
+            url::Url::parse(u)
+                .map(|p| p.path().to_string())
+                .unwrap_or_default()
+        };
+    let last = path_part
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or("");
+    let name = last.strip_suffix(".git").unwrap_or(last).to_string();
+    let is_bad = name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.chars().any(|c| {
+            matches!(
+                c,
+                '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0'
+            )
+        });
+    if is_bad {
+        return Err(OperationError::Failed(format!(
+            "无法从 URL 推导仓库目录名:{}",
+            redact_url(url)
+        )));
+    }
+    Ok(name)
+}
+
+/// 最终克隆位置:`target_dir` 是「放置位置(父目录)」,自动生成 `<target_dir>/<repo-name>`,
+/// 与 `git clone <url>` 一致(桌面非空也不受影响);若 target_dir 的末级目录名恰好就是
+/// repo-name(用户已直接选了仓库目录),则直接使用它。
+fn final_target_dir(target_dir: &Path, repo_name: &str) -> PathBuf {
+    let name_matches = target_dir
+        .file_name()
+        .is_some_and(|n| n.to_string_lossy() == repo_name);
+    if name_matches {
+        target_dir.to_path_buf()
+    } else {
+        target_dir.join(repo_name)
+    }
 }
 
 /// 一键全套流程(clone 或 clone+install+build+post-check)。
@@ -413,13 +488,25 @@ fn run_clone_full_inner(
 ) -> Result<CloneOutcome, OperationError> {
     token.check()?;
     validate_url(&request.url).map_err(OperationError::Failed)?;
-    let git = tools
-        .git
-        .clone()
-        .ok_or_else(|| OperationError::Failed("未找到 git,请先安装托管 Git 或系统 git".into()))?;
+    let git = tools.git.clone().ok_or_else(|| {
+        OperationError::Failed(if cfg!(windows) {
+            "未找到 git;请先在「环境」步骤点击「一键安装缺失环境」安装托管 MinGit,或安装 Git for Windows 后重试".into()
+        } else {
+            "未找到 git;请先安装系统 git(Xcode Command Line Tools / Homebrew)后重试".into()
+        })
+    })?;
 
     // 1. 目标可用性(不存在或空)
-    let target = PathBuf::from(&request.target_dir);
+    //    target_dir 是「放置位置(父目录)」:自动生成 <target_dir>/<repo-name>(与 git clone
+    //    一致),因此桌面等非空目录也可以选;只有最终仓库目录已存在且非空才拒绝。
+    let repo_name = repo_name_from_url(&request.url)?;
+    let requested = PathBuf::from(&request.target_dir);
+    let target = final_target_dir(&requested, &repo_name);
+    log.append(
+        "launcher",
+        crate::contract::LogLevel::Info,
+        &format!("克隆目标(自动生成仓库目录)→ {}", target.display()),
+    );
     target_usable(&target).map_err(OperationError::Failed)?;
     let parent = target
         .parent()
@@ -428,7 +515,7 @@ fn run_clone_full_inner(
         .map_err(|e| OperationError::Failed(format!("创建父目录失败:{e}")))?;
 
     // 2. 只读远端检查 + 默认分支动态发现
-    on_stage("验证远端…", None);
+    on_stage("验证远端…", Some(5));
     let remote_branch = remote_default_branch(log, &git, &request.url, tools, cancel)?;
     let branch = request
         .branch
@@ -454,7 +541,7 @@ fn run_clone_full_inner(
     );
 
     // 4. clone(不 shallow;分支已动态发现)
-    on_stage(&format!("克隆 {branch} 分支…"), None);
+    on_stage(&format!("克隆 {branch} 分支…"), Some(15));
     let mut clone_args = vec!["clone".to_string(), request.url.clone()];
     if !branch.is_empty() {
         clone_args.push("--branch".to_string());
@@ -498,7 +585,7 @@ fn run_clone_full_inner(
     // 6. 一键全套:pnpm(精确版本)→ install → build → post-check
     if full {
         token.check()?;
-        on_stage("解析 pnpm 版本(packageManager)…", None);
+        on_stage("解析 pnpm 版本(packageManager)…", Some(40));
         let pnpm_ver =
             crate::toolchain::pnpm_version_from_package_json(&staging.display().to_string())?;
         crate::toolchain::ensure_pnpm_version(log, &pnpm_ver, token, &|s| on_stage(s, None))?;
@@ -506,7 +593,7 @@ fn run_clone_full_inner(
             .ok_or_else(|| OperationError::Failed("托管 pnpm 未就绪".into()))?;
 
         token.check()?;
-        on_stage("安装依赖(pnpm install)…", None);
+        on_stage("安装依赖(pnpm install)…", Some(50));
         let (code, _) = run_cancellable(
             log,
             "pnpm install",
@@ -525,7 +612,7 @@ fn run_clone_full_inner(
         }
         token.check()?;
 
-        on_stage("构建(pnpm run build)…", None);
+        on_stage("构建(pnpm run build)…", Some(65));
         let (code, _) = run_cancellable(
             log,
             "pnpm build",
@@ -545,7 +632,7 @@ fn run_clone_full_inner(
         token.check()?;
 
         // post-check:前端 dist 存在
-        on_stage("post-check(产物校验)…", None);
+        on_stage("post-check(产物校验)…", Some(95));
         let dist = staging.join("apps/web/dist/index.html");
         if !dist.is_file() {
             let _ = std::fs::remove_dir_all(&staging);
@@ -676,6 +763,57 @@ mod tests {
         assert!(r.contains("[redacted]"));
         let plain = redact_url("https://host/x.git");
         assert_eq!(plain, "https://host/x.git");
+    }
+
+    #[test]
+    fn repo_name_from_common_urls() {
+        assert_eq!(
+            repo_name_from_url("https://github.com/deepseek-ai/deepseek-harness.git").unwrap(),
+            "deepseek-harness"
+        );
+        assert_eq!(
+            repo_name_from_url("https://github.com/deepseek-ai/deepseek-harness").unwrap(),
+            "deepseek-harness"
+        );
+        assert_eq!(
+            repo_name_from_url("git@github.com:deepseek-ai/deepseek-harness.git").unwrap(),
+            "deepseek-harness"
+        );
+        assert_eq!(
+            repo_name_from_url("ssh://git@github.com/deepseek-ai/deepseek-harness.git").unwrap(),
+            "deepseek-harness"
+        );
+        assert_eq!(
+            repo_name_from_url("https://github.com/deepseek-ai/deepseek-harness.git/").unwrap(),
+            "deepseek-harness"
+        );
+        assert!(
+            repo_name_from_url("https://github.com/").is_err(),
+            "无仓库名应拒绝"
+        );
+        // URL 解析会规范化点段,`.`/`..` 防护作用于 scp-like 分支
+        assert!(
+            repo_name_from_url("git@github.com:a/b/..").is_err(),
+            ".. 应拒绝"
+        );
+        assert!(
+            repo_name_from_url("git@github.com:a/b/.").is_err(),
+            ". 应拒绝"
+        );
+    }
+
+    #[test]
+    fn final_target_appends_repo_name_or_reuses_matching_basename() {
+        let t = final_target_dir(Path::new("/Users/me/Desktop"), "deepseek-harness");
+        assert_eq!(t, Path::new("/Users/me/Desktop/deepseek-harness"));
+        // 用户已直接选择仓库目录(末级同名)→ 直接使用,不再套一层
+        let t2 = final_target_dir(
+            Path::new("/Users/me/Desktop/deepseek-harness"),
+            "deepseek-harness",
+        );
+        assert_eq!(t2, Path::new("/Users/me/Desktop/deepseek-harness"));
+        let t3 = final_target_dir(Path::new("/Users/me/repos"), "deepseek-harness");
+        assert_eq!(t3, Path::new("/Users/me/repos/deepseek-harness"));
     }
 
     #[test]

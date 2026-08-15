@@ -516,8 +516,8 @@ impl Default for SettingsSnapshot {
             open_browser: true,
             auto_update_check: true,
             build_args: String::new(),
-            ready_timeout_ms: 120_000,
-            start_timeout_ms: 120_000,
+            ready_timeout_ms: 180_000,
+            start_timeout_ms: 180_000,
             first_run_skipped: false,
         }
     }

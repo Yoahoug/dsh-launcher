@@ -49,6 +49,43 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+// ── 环境检测文件缓存 ─────────────────────────────────────
+// 探测 node/pnpm/git 要拉起子进程,Windows 上可能耗时数秒;成功结果落盘缓存,
+// 工具链安装/克隆/设置/构建等影响检测结果的动作显式失效,「重新检测」走 force。
+
+/// 缓存有效期:24h(成功即成功;跨天或显式失效才重新探测)。
+const ENV_CACHE_TTL_MS: i64 = 24 * 60 * 60 * 1000;
+
+fn env_cache_file() -> PathBuf {
+    crate::config::state_dir().join("env-cache.json")
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct EnvCacheFile {
+    cached_at_ms: i64,
+    snapshot: EnvironmentSnapshot,
+}
+
+fn load_env_cache() -> Option<EnvironmentSnapshot> {
+    let raw = std::fs::read_to_string(env_cache_file()).ok()?;
+    let c: EnvCacheFile = serde_json::from_str(&raw).ok()?;
+    if now_ms() - c.cached_at_ms > ENV_CACHE_TTL_MS {
+        return None;
+    }
+    Some(c.snapshot)
+}
+
+fn save_env_cache(snap: &EnvironmentSnapshot) {
+    let _ = std::fs::create_dir_all(crate::config::state_dir());
+    let c = EnvCacheFile {
+        cached_at_ms: now_ms(),
+        snapshot: snap.clone(),
+    };
+    if let Ok(json) = serde_json::to_string_pretty(&c) {
+        let _ = std::fs::write(env_cache_file(), json);
+    }
+}
+
 /// 更新快照并返回独立副本。调用方拿到结果时互斥锁必须已经释放，
 /// 后续事件广播、托盘菜单构建等操作才可以安全地再次读取状态。
 fn apply_snapshot_update(
@@ -290,7 +327,9 @@ impl AppState {
         }
         config::apply_patch(&serde_json::Value::Object(map))?;
         let _ = skip; // skip 与完成都标记 firstRunSkipped=true;差异仅在是否保存 repoPath
-                      // 刷新仓库快照(完成路径下 repoPath 可能变化)
+                      // repoPath 可能变化 → 环境缓存失效
+        self.invalidate_env_cache();
+        // 刷新仓库快照(完成路径下 repoPath 可能变化)
         self.refresh_repo();
         let snap = self.snapshot();
         let _ = app.emit(EVENT_STATE_CHANGED, &snap);
@@ -325,12 +364,30 @@ impl AppState {
     pub fn save_settings(&self, patch: &serde_json::Value) -> Result<SettingsSnapshot, String> {
         let snap = self.snapshot();
         self.can_run("save-settings", &snap)?;
-        config::apply_patch(patch)
+        let saved = config::apply_patch(patch)?;
+        // 设置可能含 repoPath 等影响环境检测的字段 → 缓存失效
+        self.invalidate_env_cache();
+        Ok(saved)
     }
 
     // ── 环境 ─────────────────────────────────────────────
 
-    pub fn environment(&self) -> EnvironmentSnapshot {
+    /// 环境检测(带文件缓存):探测 node/pnpm/git 需要拉起子进程,Windows 上可能耗时
+    /// 数百毫秒到数秒;检测结果落盘缓存,force=false 且缓存有效时直接返回,秒开。
+    /// 缓存由工具链安装/克隆/设置变更显式失效;「重新检测」传 force=true 绕过。
+    pub fn environment(&self, force: bool) -> EnvironmentSnapshot {
+        if !force {
+            if let Some(snap) = load_env_cache() {
+                return snap;
+            }
+        }
+        let snap = self.detect_environment();
+        save_env_cache(&snap);
+        snap
+    }
+
+    /// 实际探测(不读缓存)。
+    fn detect_environment(&self) -> EnvironmentSnapshot {
         let settings = config::load();
         let tools = self.tools.lock().unwrap().clone();
         let mut warnings = Vec::new();
@@ -369,6 +426,11 @@ impl AppState {
             git,
             warnings,
         }
+    }
+
+    /// 环境缓存失效(工具链安装/克隆/仓库路径/构建等影响检测结果的动作后调用)。
+    pub fn invalidate_env_cache(&self) {
+        let _ = std::fs::remove_file(env_cache_file());
     }
 
     // ── 性能测量 ─────────────────────────────────────────
@@ -761,6 +823,46 @@ impl AppState {
             );
             return Err(OperationError::Failed("no-pnpm".into()));
         }
+        // 首次初始化:仓库缺构建产物(dists / 客户端 bundle)时先自动构建,
+        // 避免 dsh web 因缺 bundle 崩溃后空等就绪超时。构建过程实时推送到界面卡片。
+        if config::repo_needs_build(&settings.repo_path) {
+            self.log_hub.append(
+                "launcher",
+                crate::contract::LogLevel::Info,
+                "仓库缺少构建产物,启动前先自动构建(首次初始化较慢,请留意进度卡片)",
+            );
+            self.set_snapshot(app, |s| {
+                s.error = None;
+                s.state = LauncherState::Building;
+                s.phase = "首次初始化构建中…".into();
+            });
+            let tools = self.tools.lock().unwrap().clone();
+            let ok = crate::services::build::run_build(
+                &self.log_hub,
+                &tools,
+                &settings.repo_path,
+                &settings.build_args,
+                &|p| {
+                    self.set_snapshot(app, |s| s.phase = p.to_string());
+                },
+                token,
+            )?;
+            token.check()?;
+            if !ok {
+                self.fail(
+                    app,
+                    "构建失败",
+                    "仓库初始化构建失败,服务未启动。查看日志尾部定位阶段,修复后重试「启动」",
+                );
+                return Err(OperationError::Failed("build-failed".into()));
+            }
+            self.invalidate_env_cache();
+            self.log_hub.append(
+                "launcher",
+                crate::contract::LogLevel::Ok,
+                "初始化构建完成,继续启动 dsh web",
+            );
+        }
         self.set_snapshot(app, |s| {
             s.error = None;
             s.mode = if mode == "dev" {
@@ -939,6 +1041,8 @@ impl AppState {
             );
             return Err(OperationError::Failed("build-failed".into()));
         }
+        // dist 构建产物变化 → 环境缓存失效
+        self.invalidate_env_cache();
 
         // 4. 重启服务(同模式)
         self.supervisor.stop("dsh web");
@@ -1042,6 +1146,8 @@ impl AppState {
             );
             return Err(OperationError::Failed("build-failed".into()));
         }
+        // dist 构建产物变化 → 环境缓存失效
+        self.invalidate_env_cache();
         self.refresh_repo();
         self.set_snapshot(app, |s| {
             s.state = LauncherState::Starting;
@@ -1251,6 +1357,8 @@ impl AppState {
                         result.final_dir, result.branch, result.head
                     ),
                 );
+                // 立即刷新仓库快照,仓库页/首页不再显示「读取不到」
+                self.refresh_repo();
                 self.set_snapshot(app, |s| {
                     s.state = LauncherState::Idle;
                     s.phase = String::new();
@@ -1280,6 +1388,8 @@ impl AppState {
         if let Some(p) = pnpm {
             tools.pnpm = Some(p);
         }
+        // 工具链可能已变化 → 环境缓存失效
+        self.invalidate_env_cache();
     }
 
     // ── 其它命令 ─────────────────────────────────────────
@@ -1479,6 +1589,44 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn env_cache_roundtrip_and_invalidation() {
+        let _g = crate::test_lock::ENV_LOCK.lock().unwrap();
+        let base = std::env::temp_dir().join(format!("dsh-envcache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::env::set_var("DSH_LAUNCHER_STATE_DIR", &base);
+        std::env::set_var("DSH_LAUNCHER_CONFIG_DIR", base.join("config"));
+
+        let empty = crate::contract::ToolRuntime {
+            version: None,
+            source: None,
+            path: None,
+            status: crate::contract::ToolCheck::Missing,
+            verified: false,
+            hint: None,
+            managed_available: false,
+        };
+        let snap = EnvironmentSnapshot {
+            repo_path: "/tmp/x".into(),
+            repo_usable: crate::contract::RepoUsable {
+                ok: true,
+                reason: None,
+            },
+            dist_built: Some(true),
+            platform: "test".into(),
+            node: empty.clone(),
+            pnpm: empty.clone(),
+            git: empty,
+            warnings: vec!["w".into()],
+        };
+        assert!(load_env_cache().is_none(), "无缓存时应为 None");
+        save_env_cache(&snap);
+        assert_eq!(load_env_cache(), Some(snap.clone()));
+        test_state().invalidate_env_cache();
+        assert!(load_env_cache().is_none(), "失效后应清除");
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     #[test]
     fn snapshot_update_releases_lock_before_side_effects() {
