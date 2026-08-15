@@ -71,17 +71,26 @@ export function FirstRunPage({ onDone }: { onDone: () => void }) {
   const opActive =
     op && (op.status === 'queued' || op.status === 'running') ? (op as OperationSnapshot) : null
 
-  /** 仅重新检测环境(不切步骤;克隆/安装终态后调用)。 */
-  const detect = React.useCallback(async (): Promise<EnvironmentSnapshot | null> => {
-    try {
-      const e = await api.inspectEnvironment()
-      setEnv(e)
-      return e
-    } catch (err) {
-      toast({ kind: 'error', title: '环境检测失败', detail: String(err) })
-      return null
-    }
-  }, [toast])
+  /** 仅重新检测环境(不切步骤;克隆/安装终态后调用;force=true 绕过文件缓存)。 */
+  const detect = React.useCallback(
+    async (force = false): Promise<EnvironmentSnapshot | null> => {
+      try {
+        const e = await api.inspectEnvironment(force)
+        setEnv(e)
+        return e
+      } catch (err) {
+        toast({ kind: 'error', title: '环境检测失败', detail: String(err) })
+        return null
+      }
+    },
+    [toast],
+  )
+
+  // 进入「已有仓库」步骤时先轻量检测一次环境(git 状态展示在克隆按钮旁,避免克隆时才报 git 缺失)
+  React.useEffect(() => {
+    if (step === 'repo' && !envRef.current) void detect()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step])
 
   /** 仓库步骤:保存路径 + 检测环境 + 进入环境步骤。 */
   const runEnvCheck = async (path?: string) => {
@@ -154,12 +163,12 @@ export function FirstRunPage({ onDone }: { onDone: () => void }) {
   }
 
   return (
-    <div className="flex h-full items-center justify-center overflow-y-auto p-8">
+    <div className="flex h-full items-center justify-center overflow-y-auto bg-background p-8">
       <motion.div
         initial={{ opacity: 0, y: 16, scale: 0.98 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
-        className="glass-card w-full max-w-lg rounded-xl p-8"
+        className="w-full max-w-lg rounded-xl border border-border bg-card p-8 shadow-xl"
       >
         <div className="flex items-center gap-3">
           <img src={logoUrl} alt="" className="size-10 rounded-xl" />
@@ -175,7 +184,7 @@ export function FirstRunPage({ onDone }: { onDone: () => void }) {
           稳定运行在后台。首次使用需要选择仓库并确认运行环境,也可稍后配置。
         </p>
 
-        {/* 长任务进度卡(克隆/安装期间常驻显示,可取消) */}
+        {/* 长任务进度卡(克隆/安装期间常驻显示,可取消;含进度条) */}
         {opActive && (
           <div className="mt-4 rounded-xl border border-blue-500/25 bg-blue-500/[0.05] px-4 py-3">
             <div className="flex items-center gap-2.5">
@@ -187,7 +196,20 @@ export function FirstRunPage({ onDone }: { onDone: () => void }) {
                 取消
               </Button>
             </div>
-            <p className="mt-1 pl-6 text-xs text-muted-foreground">{opActive.stage}</p>
+            <p className="mt-1 pl-6 text-xs text-muted-foreground">
+              {opActive.stage}
+              {opActive.progress != null ? ` ${opActive.progress}%` : ''}
+            </p>
+            <div className="mt-2 ml-6 h-1.5 w-[calc(100%-1.5rem)] overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
+              {opActive.progress != null ? (
+                <div
+                  className="h-full rounded-full bg-blue-500 transition-[width] duration-300"
+                  style={{ width: `${Math.max(2, Math.min(100, opActive.progress))}%` }}
+                />
+              ) : (
+                <div className="animate-indeterminate h-full w-2/5 rounded-full bg-blue-500" />
+              )}
+            </div>
           </div>
         )}
 
@@ -233,8 +255,21 @@ export function FirstRunPage({ onDone }: { onDone: () => void }) {
                     <p className="text-sm font-medium">还没有仓库?</p>
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    一键克隆 DeepSeek Harness 并完成依赖安装与构建(需要 git;缺失时可先在上一步环境步骤一键安装)。
+                    一键克隆 DeepSeek Harness 并完成依赖安装与构建;克隆需要 git,缺失时可先在下方
+                    「检测环境」步骤一键安装托管 git(Windows)或系统 git(macOS/Linux)。
                   </p>
+                  {env && (
+                    <p
+                      className={`text-xs ${
+                        env.git.status === 'detected' ? 'text-emerald-500' : 'text-amber-500'
+                      }`}
+                    >
+                      git:{' '}
+                      {env.git.status === 'detected'
+                        ? `已就绪 ${env.git.version ? `(${env.git.version})` : ''}`
+                        : '未找到 —— 克隆前请先安装(克隆弹窗会给出指引)'}
+                    </p>
+                  )}
                   <Button size="sm" variant="outline" onClick={() => setCloneOpen(true)} disabled={Boolean(opActive)}>
                     <GitFork /> 克隆仓库并初始化
                   </Button>
@@ -281,7 +316,7 @@ export function FirstRunPage({ onDone }: { onDone: () => void }) {
                       <ShieldCheck /> 一键安装缺失环境
                     </Button>
                   )}
-                  <Button variant="ghost" size="sm" onClick={() => void detect()} disabled={checking}>
+                  <Button variant="ghost" size="sm" onClick={() => void detect(true)} disabled={checking}>
                     <RefreshCw className={checking ? 'animate-spin' : ''} /> 重新检测
                   </Button>
                   <Button variant="ghost" size="sm" onClick={() => setStep('repo')}>
