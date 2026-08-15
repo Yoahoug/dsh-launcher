@@ -3,15 +3,11 @@
   "version": "0.2.1",
   "private": true,
   "type": "module",
-  "description": "Pure launcher for DeepSeek Harness dev workflow: source launch, update+build, HMR dev mode, background daemon, light console UI. 零运行时依赖,仅 Node 内置模块。",
+  "description": "DSH Launcher — DeepSeek Harness 启动器桌面版(Tauri 原生核心)",
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
   },
   "scripts": {
-    "start": "node src/server.mjs",
-    "check": "node --check src/server.mjs && node --check src/config.mjs && node --check src/log.mjs && node --check src/state.mjs && node --check src/process.mjs && node --check src/repo.mjs && node --check src/build.mjs && node --check src/updater.mjs && node --check src/zip.mjs && node --check src/tools.mjs && node --check src/nodeenv.mjs",
-    "test": "node --test --test-concurrency=1 \"tests/**/*.test.mjs\"",
-    "test:unit": "node --test --test-concurrency=1 \"tests/unit/*.test.mjs\"",
     "test:ui": "vitest run --config src-ui/vite.config.ts",
     "dev:renderer": "vite --config src-ui/vite.config.ts",
     "build:renderer": "vite build --config src-ui/vite.config.ts",

@@ -5,12 +5,18 @@
 //   3. updater restart:由 updater 插件触发 app.exit(),不停止 dsh、不走普通退出清理。
 use crate::contract::{CloseBehavior, EVENT_PREFERENCES_CHANGED};
 use crate::state::AppState;
+use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 
 /// CloseRequested:默认隐藏到托盘;偏好 quit 时直接退出(普通退出语义,不停止 dsh)。
 pub fn on_close_requested(app: &AppHandle, window: &tauri::Window, api: &tauri::CloseRequestApi) {
-    let prefs = app.state::<AppState>().preferences.lock().unwrap().clone();
+    let prefs = app
+        .state::<Arc<AppState>>()
+        .preferences
+        .lock()
+        .unwrap()
+        .clone();
     match prefs.close_behavior {
         CloseBehavior::Tray => {
             api.prevent_close();
@@ -32,7 +38,12 @@ pub fn on_close_requested(app: &AppHandle, window: &tauri::Window, api: &tauri::
 
 /// ExitRequested:阻止运行时自动退出请求(保持托盘),除非偏好允许退出。
 pub fn on_exit_requested(app: &AppHandle, api: &tauri::ExitRequestApi) {
-    let prefs = app.state::<AppState>().preferences.lock().unwrap().clone();
+    let prefs = app
+        .state::<Arc<AppState>>()
+        .preferences
+        .lock()
+        .unwrap()
+        .clone();
     match prefs.close_behavior {
         CloseBehavior::Tray => {
             api.prevent_exit();
@@ -48,11 +59,9 @@ pub fn on_reopen(app: &AppHandle) {
     crate::tray::show_main_window(app);
 }
 
-/// detach:通知 daemon 让 dsh 继续后台运行,停止轮询。幂等。
+/// detach:让 dsh 继续后台运行(清空托管注册表)。幂等。
 fn detach(app: &AppHandle) {
-    if let Some(sup) = app.state::<AppState>().supervisor() {
-        crate::bridge::shutdown(&sup);
-    }
+    app.state::<Arc<AppState>>().on_app_exit();
 }
 
 /// 普通退出:仅 detach(不停止 dsh),保存窗口状态由 window-state 插件完成。
@@ -88,12 +97,17 @@ pub fn confirm_stop_and_quit_blocking(app: &AppHandle) -> bool {
 
 /// 停止服务并退出:确认(偏好开关)→ stop → 等待空闲 → detach → 退出。
 pub fn stop_and_quit(app: &AppHandle) {
-    let prefs = app.state::<AppState>().preferences.lock().unwrap().clone();
+    let prefs = app
+        .state::<Arc<AppState>>()
+        .preferences
+        .lock()
+        .unwrap()
+        .clone();
     if prefs.confirm_stop_and_quit && !confirm_stop_and_quit_blocking(app) {
         return;
     }
-    let state = app.state::<AppState>();
-    let res = state.run_action("stop");
+    let state = app.state::<Arc<AppState>>();
+    let res = state.run_action(app, "stop");
     if !res.ok {
         log::warn!("停止服务失败,仍退出: {:?}", res.reason);
         quit_launcher(app);
@@ -103,7 +117,7 @@ pub fn stop_and_quit(app: &AppHandle) {
     std::thread::spawn(move || {
         // 等待停止完成(≤15s),然后 detach 退出
         for _ in 0..150 {
-            let snap = handle.state::<AppState>().snapshot();
+            let snap = handle.state::<Arc<AppState>>().snapshot();
             if snap.state == crate::contract::LauncherState::Idle {
                 break;
             }
@@ -120,7 +134,12 @@ fn remove_tray(app: &AppHandle) {
 
 /// 偏好变更后应用副作用:autostart 同步、托盘可见性、通知 renderer 应用主题。
 pub fn apply_preferences(app: &AppHandle) {
-    let prefs = app.state::<AppState>().preferences.lock().unwrap().clone();
+    let prefs = app
+        .state::<Arc<AppState>>()
+        .preferences
+        .lock()
+        .unwrap()
+        .clone();
 
     // autostart 只由 Tauri 插件管理,不再调用旧 LaunchAgent
     use tauri_plugin_autostart::ManagerExt;

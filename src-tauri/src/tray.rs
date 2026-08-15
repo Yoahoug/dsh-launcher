@@ -2,6 +2,7 @@
 // 动态菜单:随 AppSnapshot 状态启用/禁用;所有动作与 UI 走同一个 ActionCoordinator 数据源。
 use crate::contract::{LauncherState, EVENT_OPEN_PAGE};
 use crate::state::AppState;
+use std::sync::Arc;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager};
@@ -40,7 +41,7 @@ fn open_page(app: &AppHandle, page: &str) {
 
 /// 动态构建托盘菜单。
 fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
-    let state = app.state::<AppState>();
+    let state = app.state::<Arc<AppState>>();
     let snap = state.snapshot();
     let busy = snap.busy
         || matches!(
@@ -136,27 +137,27 @@ pub fn setup(app: &AppHandle) -> tauri::Result<TrayIcon<tauri::Wry>> {
             "status" => {}
             "show" => show_main_window(app),
             "open-dsh" => {
-                let _ = app.state::<AppState>().open_dsh();
+                let _ = app.state::<Arc<AppState>>().open_dsh();
             }
             "start" => {
-                let _ = app.state::<AppState>().run_action("start");
+                let _ = app.state::<Arc<AppState>>().run_action(app, "start");
             }
             "dev" => {
-                let _ = app.state::<AppState>().run_action("dev");
+                let _ = app.state::<Arc<AppState>>().run_action(app, "dev");
             }
             "update" => {
-                let _ = app.state::<AppState>().run_action("update");
+                let _ = app.state::<Arc<AppState>>().run_action(app, "update");
             }
             "rebuild" => {
-                let _ = app.state::<AppState>().run_action("rebuild");
+                let _ = app.state::<Arc<AppState>>().run_action(app, "rebuild");
             }
             "stop" => {
-                let _ = app.state::<AppState>().run_action("stop");
+                let _ = app.state::<Arc<AppState>>().run_action(app, "stop");
             }
             "logs" => open_page(app, "logs"),
             "settings" => open_page(app, "settings"),
             "check-update" => {
-                let _ = app.state::<AppState>().run_action("check-update");
+                let _ = app.state::<Arc<AppState>>().run_action(app, "check-update");
                 show_main_window(app);
             }
             "quit" => crate::lifecycle::quit_launcher(app),
@@ -176,7 +177,7 @@ pub fn setup(app: &AppHandle) -> tauri::Result<TrayIcon<tauri::Wry>> {
         .build(app)?;
 
     let show_icon = app
-        .state::<AppState>()
+        .state::<Arc<AppState>>()
         .preferences
         .lock()
         .unwrap()

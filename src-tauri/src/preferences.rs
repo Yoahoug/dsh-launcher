@@ -101,10 +101,7 @@ pub fn save_validated(prefs: &DesktopPreferences) -> Result<DesktopPreferences, 
 mod tests {
     use super::*;
     use crate::contract::{CloseBehavior, Theme};
-    use std::sync::Mutex;
-
-    /// env 覆盖是进程级全局,相关测试必须串行。
-    static CONFIG_LOCK: Mutex<()> = Mutex::new(());
+    use crate::test_lock::ENV_LOCK;
 
     fn temp_config_dir(name: &str) -> PathBuf {
         let base =
@@ -117,7 +114,7 @@ mod tests {
 
     #[test]
     fn save_load_roundtrip() {
-        let _guard = CONFIG_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().unwrap();
         let dir = temp_config_dir("roundtrip");
         let prefs = DesktopPreferences {
             theme: Theme::Dark,
@@ -134,7 +131,7 @@ mod tests {
 
     #[test]
     fn missing_file_returns_defaults() {
-        let _guard = CONFIG_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().unwrap();
         let dir = temp_config_dir("missing");
         let p = load();
         assert_eq!(p, DesktopPreferences::default());
@@ -146,7 +143,7 @@ mod tests {
 
     #[test]
     fn migrates_autostart_once_from_legacy_config() {
-        let _guard = CONFIG_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().unwrap();
         let dir = temp_config_dir("migrate");
         // 先造旧 Node 配置
         std::fs::write(
@@ -165,7 +162,7 @@ mod tests {
 
     #[test]
     fn no_migration_when_autostart_false() {
-        let _guard = CONFIG_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().unwrap();
         let dir = temp_config_dir("no-migrate");
         std::fs::write(dir.join("dsh-launcher.json"), r#"{"autostart":false}"#).unwrap();
         let p = load_and_migrate();
@@ -175,7 +172,7 @@ mod tests {
 
     #[test]
     fn corrupt_preferences_file_falls_back_to_defaults() {
-        let _guard = CONFIG_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().unwrap();
         let dir = temp_config_dir("corrupt");
         std::fs::write(dir.join("preferences.json"), "not json{{{").unwrap();
         let p = load();
