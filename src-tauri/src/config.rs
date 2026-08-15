@@ -244,7 +244,9 @@ mod tests {
         )
         .unwrap();
         let s = load();
-        let home = std::env::var("HOME").unwrap();
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap();
         assert_eq!(s.repo_path, format!("{home}/Desktop/deepseek-harness"));
         assert_eq!(s.port, 3081);
         assert_eq!(s.ready_timeout_ms, 60_000);
