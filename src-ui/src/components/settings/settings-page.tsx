@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { FolderOpen, Globe, RefreshCw, Server, Wrench } from 'lucide-react'
+import { ArrowLeft, FolderOpen, Globe, RefreshCw, Save, Server, Wrench } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -21,16 +21,16 @@ const CLOSE_OPTIONS: { value: CloseBehavior; label: string }[] = [
   { value: 'quit', label: '退出应用(不停止 dsh)' },
 ]
 
-function Section({ icon, title, children }: { icon: React.ReactNode; title: string; children: React.ReactNode }) {
+function Section({ icon, title, children, className }: { icon: React.ReactNode; title: string; children: React.ReactNode; className?: string }) {
   return (
-    <Card>
-      <CardHeader>
+    <Card className={className}>
+      <CardHeader className="border-b border-[var(--border)] pb-4">
         <CardTitle className="flex items-center gap-2">
-          {icon}
+          <span className="flex size-8 items-center justify-center rounded-xl bg-[var(--primary)]/10">{icon}</span>
           {title}
         </CardTitle>
       </CardHeader>
-      <CardContent className="space-y-4">{children}</CardContent>
+      <CardContent className="space-y-4 pt-5">{children}</CardContent>
     </Card>
   )
 }
@@ -167,17 +167,26 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
   const running = snap?.state === 'running'
 
   return (
-    <main className="flex-1 space-y-4 overflow-y-auto p-5">
-      <div className="flex items-center gap-2">
-        <Button variant="ghost" size="sm" onClick={goBack}>
-          ← 返回
+    <main className="flex flex-1 flex-col overflow-hidden">
+      <div
+        data-tauri-drag-region
+        className="flex h-[72px] shrink-0 items-center gap-3 border-b border-[var(--border)] bg-[var(--header)] pl-[84px] pr-5 backdrop-blur-2xl"
+      >
+        <Button variant="ghost" size="sm" onClick={goBack} aria-label="← 返回" data-tauri-drag-region="false">
+          <ArrowLeft /> 返回
         </Button>
-        <h2 className="text-sm font-semibold">设置</h2>
+        <div data-tauri-drag-region>
+          <h2 className="text-[15px] font-semibold" data-tauri-drag-region>设置</h2>
+          <p className="mt-0.5 text-[10px] text-[var(--muted-foreground)]" data-tauri-drag-region>运行环境、桌面行为与更新</p>
+        </div>
         <div className="flex-1" />
-        <Button size="sm" onClick={() => void save()} disabled={!dirty || saving}>
-          {saving ? '保存中…' : '保存'}
+        <Button size="sm" onClick={() => void save()} disabled={!dirty || saving} aria-label="保存" data-tauri-drag-region="false">
+          <Save /> {saving ? '保存中…' : dirty ? '保存修改' : '已保存'}
         </Button>
       </div>
+
+      <div className="flex-1 overflow-y-auto px-6 py-6">
+        <div className="mx-auto max-w-[920px] space-y-4">
 
       <Section icon={<Server className="size-4 text-[var(--primary)]" />} title="基础">
         <Field label="仓库路径" hint="DeepSeek Harness 源码目录">
@@ -321,6 +330,8 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
           </a>
         </p>
       </Section>
+        </div>
+      </div>
     </main>
   )
 }

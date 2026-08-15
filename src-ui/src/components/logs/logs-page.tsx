@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { ArrowDown, Copy, Eraser, FolderOpen, Pause, Play, Search } from 'lucide-react'
+import { ArrowDown, ArrowLeft, Copy, Eraser, FolderOpen, Pause, Play, Search } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
@@ -114,12 +114,34 @@ export function LogsPage({ initialLevel, onBack }: { initialLevel?: LogLevel; on
 
   return (
     <main className="flex flex-1 flex-col overflow-hidden">
-      <div className="flex shrink-0 items-center gap-2 border-b border-[var(--border)] px-5 py-3">
-        <Button variant="ghost" size="sm" onClick={onBack}>
-          ← 返回
+      <div
+        data-tauri-drag-region
+        className="flex h-[72px] shrink-0 items-center gap-3 border-b border-[var(--border)] bg-[var(--header)] pl-[84px] pr-5 backdrop-blur-2xl"
+      >
+        <Button variant="ghost" size="sm" onClick={onBack} aria-label="← 返回" data-tauri-drag-region="false">
+          <ArrowLeft /> 返回
         </Button>
-        <h2 className="text-sm font-semibold">日志</h2>
-        <div className="flex-1" />
+        <div data-tauri-drag-region>
+          <h2 className="text-[15px] font-semibold" data-tauri-drag-region>运行日志</h2>
+          <p className="mt-0.5 text-[10px] text-[var(--muted-foreground)]" data-tauri-drag-region>{filtered.length} 条记录 · 最多保留 {RING_CAP} 条</p>
+        </div>
+        <div className="flex-1" data-tauri-drag-region />
+        <Button variant={paused ? 'primary' : 'ghost'} size="sm" onClick={() => setPaused((p) => !p)} data-tauri-drag-region="false">
+          {paused ? <Play /> : <Pause />}
+          {paused ? '继续' : '暂停'}
+        </Button>
+        <Button variant="ghost" size="sm" onClick={() => void copy(filtered.map((l) => l.text).join('\n'), '全部日志')} data-tauri-drag-region="false">
+          <Copy /> 复制
+        </Button>
+        <Button variant="ghost" size="sm" onClick={() => void clear()} data-tauri-drag-region="false">
+          <Eraser /> 清空
+        </Button>
+        <Button variant="ghost" size="sm" onClick={() => void api.openLogDirectory()} data-tauri-drag-region="false">
+          <FolderOpen /> 打开目录
+        </Button>
+      </div>
+
+      <div className="flex shrink-0 items-center gap-2 border-b border-[var(--border)] bg-[var(--card)]/70 px-5 py-2.5">
         <Select
           className="h-8 w-36 text-xs"
           options={[
@@ -137,34 +159,21 @@ export function LogsPage({ initialLevel, onBack }: { initialLevel?: LogLevel; on
           onChange={setLevel}
           aria-label="日志级别"
         />
-        <div className="relative">
+        <div className="relative flex-1">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-[var(--muted-foreground)]" />
           <Input
-            className="h-8 w-44 pl-8 text-xs"
+            className="h-8 w-full pl-8 text-xs"
             placeholder="搜索日志…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
         </div>
-        <Button variant={paused ? 'default' : 'ghost'} size="sm" onClick={() => setPaused((p) => !p)}>
-          {paused ? <Play /> : <Pause />}
-          {paused ? '继续' : '暂停'}
-        </Button>
-        <Button variant="ghost" size="sm" onClick={() => void copy(filtered.map((l) => l.text).join('\n'), '全部日志')}>
-          <Copy /> 复制
-        </Button>
-        <Button variant="ghost" size="sm" onClick={() => void clear()}>
-          <Eraser /> 清空
-        </Button>
-        <Button variant="ghost" size="sm" onClick={() => void api.openLogDirectory()}>
-          <FolderOpen /> 打开目录
-        </Button>
       </div>
 
       <div
         ref={boxRef}
         onScroll={onScroll}
-        className="relative flex-1 overflow-y-auto px-5 py-3 font-mono text-[12px] leading-relaxed"
+        className="relative m-4 mt-3 flex-1 overflow-y-auto rounded-2xl border border-[var(--border)] bg-[var(--card)] px-4 py-3 font-mono text-[12px] leading-relaxed shadow-[var(--shadow-card)]"
         role="log"
         aria-live="polite"
       >
@@ -175,7 +184,7 @@ export function LogsPage({ initialLevel, onBack }: { initialLevel?: LogLevel; on
           </div>
         ) : (
           filtered.map((l) => (
-            <div key={l.id} className="flex gap-3 whitespace-pre-wrap break-all py-0.5 hover:bg-[var(--muted)]/40">
+            <div key={l.id} className="-mx-2 flex gap-3 rounded-lg px-2 py-1 whitespace-pre-wrap break-all hover:bg-[var(--muted)]/70">
               <span className="shrink-0 text-[var(--muted-foreground)]">{fmtTime(l.ts)}</span>
               <span className={cn('w-12 shrink-0 uppercase', LEVEL_CLASS[l.level])}>{l.level}</span>
               <span className="w-16 shrink-0 text-[var(--muted-foreground)]">{l.src}</span>

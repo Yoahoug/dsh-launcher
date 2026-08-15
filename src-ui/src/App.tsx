@@ -1,6 +1,7 @@
 import * as React from 'react'
 import { Dashboard } from '@/components/dashboard/dashboard'
-import { TopBar, type ModeTab } from '@/components/dashboard/topbar'
+import { TopBar } from '@/components/dashboard/topbar'
+import type { LaunchMode } from '@/components/dashboard/main-action'
 import { FirstRunPage } from '@/components/first-run/first-run'
 import { LogsPage } from '@/components/logs/logs-page'
 import { SettingsPage } from '@/components/settings/settings-page'
@@ -30,7 +31,7 @@ function AppInner() {
   const snap = useAppSnapshot()
   const desktop = useDesktopSnapshot()
   const feedback = useActionFeedback()
-  const [mode, setMode] = React.useState<ModeTab>('normal')
+  const [mode, setMode] = React.useState<LaunchMode>('normal')
   const [page, setPage] = usePage('dashboard')
   const [logsLevel, setLogsLevel] = React.useState<LogLevel | undefined>(undefined)
 
@@ -79,9 +80,6 @@ function AppInner() {
         <>
           <TopBar
             snap={snap}
-            mode={mode}
-            onModeChange={setMode}
-            onAction={handleAction}
             onOpenDsh={() => void api.openDsh()}
             onOpenLogs={() => openLogs()}
             onOpenRepo={() => void api.openRepoDirectory()}
@@ -89,6 +87,8 @@ function AppInner() {
           />
           <Dashboard
             snap={snap}
+            mode={mode}
+            onModeChange={setMode}
             onAction={handleAction}
             onOpenDsh={() => void api.openDsh()}
             onJumpLogs={() => openLogs('err')}

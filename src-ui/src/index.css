@@ -17,7 +17,7 @@
   --color-card: var(--card);
   --radius-card: 16px;
   --radius-control: 12px;
-  --shadow-card: 0 4px 12px rgb(15 23 42 / 8%);
+  --shadow-card: 0 18px 50px rgb(30 41 59 / 7%), 0 1px 2px rgb(30 41 59 / 5%);
   --font-sans:
     -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
     "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
@@ -25,17 +25,19 @@
 }
 
 :root {
-  --background: hsl(0 0% 100%);
+  --background: hsl(220 33% 97%);
   --foreground: hsl(222 22% 10%);
-  --muted: hsl(220 14% 96%);
+  --muted: hsl(220 22% 95%);
   --muted-foreground: hsl(220 9% 46%);
-  --border: hsl(220 13% 89%);
-  --primary: hsl(216 100% 52%);
+  --border: hsl(220 18% 88%);
+  --primary: hsl(228 100% 65%);
+  --primary-strong: hsl(231 84% 58%);
   --accent: hsl(24 100% 54%);
   --success: hsl(151 70% 42%);
   --warning: hsl(38 92% 50%);
   --danger: hsl(0 72% 55%);
-  --card: hsl(0 0% 100%);
+  --card: hsl(0 0% 100% / 92%);
+  --header: hsl(0 0% 100% / 82%);
 }
 
 .dark {
@@ -45,11 +47,13 @@
   --muted-foreground: hsl(220 12% 60%);
   --border: hsl(220 14% 20%);
   --primary: hsl(216 100% 62%);
+  --primary-strong: hsl(226 90% 68%);
   --accent: hsl(24 100% 58%);
   --success: hsl(151 60% 50%);
   --warning: hsl(38 90% 55%);
   --danger: hsl(0 70% 60%);
-  --card: hsl(222 22% 11%);
+  --card: hsl(222 22% 11% / 94%);
+  --header: hsl(222 24% 8% / 82%);
 }
 
 html,
@@ -60,10 +64,19 @@ body,
 
 body {
   background: var(--background);
+  background-image:
+    radial-gradient(circle at 15% -5%, color-mix(in srgb, var(--primary) 11%, transparent), transparent 34%),
+    radial-gradient(circle at 96% 8%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 30%);
+  background-attachment: fixed;
   color: var(--foreground);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   user-select: none;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--muted-foreground) 30%, transparent) transparent;
 }
 
 /* macOS overlay title bar 拖拽区(交互控件需标记 data-tauri-drag-region="false") */

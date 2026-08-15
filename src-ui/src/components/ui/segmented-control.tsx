@@ -10,18 +10,21 @@ interface SegmentedControlProps<T extends string> {
   value: T
   onChange: (value: T) => void
   disabled?: boolean
+  ariaLabel?: string
 }
 
-/** 顶部分段切换器(普通运行 / 开发模式 / 维护)。 */
+/** 同一设置项的互斥选项，不承担页面导航语义。 */
 export function SegmentedControl<T extends string>({
   options,
   value,
   onChange,
   disabled,
+  ariaLabel = '选项',
 }: SegmentedControlProps<T>) {
   return (
     <div
-      role="tablist"
+      role="radiogroup"
+      aria-label={ariaLabel}
       data-tauri-drag-region="false"
       className={cn(
         'inline-flex h-9 items-center gap-0.5 rounded-[var(--radius-control)] border border-[var(--border)] bg-[var(--muted)] p-0.5',
@@ -31,8 +34,8 @@ export function SegmentedControl<T extends string>({
       {options.map((opt) => (
         <button
           key={opt.value}
-          role="tab"
-          aria-selected={value === opt.value}
+          role="radio"
+          aria-checked={value === opt.value}
           data-tauri-drag-region="false"
           onClick={() => onChange(opt.value)}
           className={cn(

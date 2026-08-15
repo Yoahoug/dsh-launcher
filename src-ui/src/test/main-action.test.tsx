@@ -16,7 +16,7 @@ const base: AppSnapshot = {
   update: { mode: null, checking: false, available: false, version: null, url: null, size: null, notes: null, message: null, error: null, installing: false, progress: null },
 }
 
-function renderMain(snap: AppSnapshot, mode: 'normal' | 'dev' | 'maintenance') {
+function renderMain(snap: AppSnapshot, mode: 'normal' | 'dev') {
   const onAction = vi.fn()
   render(<MainAction snap={snap} mode={mode} onAction={onAction} />)
   return onAction
@@ -33,12 +33,6 @@ describe('MainAction 状态 → 动作映射', () => {
     const onAction = renderMain(base, 'dev')
     await userEvent.click(screen.getByRole('button'))
     expect(onAction).toHaveBeenCalledWith('dev')
-  })
-
-  it('idle + maintenance → update', async () => {
-    const onAction = renderMain(base, 'maintenance')
-    await userEvent.click(screen.getByRole('button'))
-    expect(onAction).toHaveBeenCalledWith('update')
   })
 
   it('running → open-dsh', async () => {

@@ -38,6 +38,8 @@ describe('App 首次运行门控', () => {
     expect(await screen.findByText('DeepSeek Harness')).toBeInTheDocument()
     expect(await screen.findByText('仓库与构建')).toBeInTheDocument()
     expect(await screen.findByText('运行环境')).toBeInTheDocument()
+    expect(screen.getByRole('radiogroup', { name: '启动方式' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '普通启动' })).toBeInTheDocument()
   })
 })
 

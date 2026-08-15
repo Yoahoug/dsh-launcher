@@ -4,7 +4,6 @@ import type { AppSnapshot } from '@/types/schema'
 import type { UiActionName } from '@/types/schema'
 
 const ACTION_LABEL: Record<string, string> = {
-  idle: '启动',
   syncing: '同步中',
   installing: '安装依赖',
   building: '构建中',
@@ -14,40 +13,48 @@ const ACTION_LABEL: Record<string, string> = {
   failed: '重试',
 }
 
-/** 右上圆形主操作:状态决定图标与动作。 */
+export type LaunchMode = 'normal' | 'dev'
+
+/** 服务卡主操作:启动方式与当前状态共同决定文案和动作。 */
 export function MainAction({
   snap,
   mode,
   onAction,
 }: {
   snap: AppSnapshot | null
-  mode: 'normal' | 'dev' | 'maintenance'
+  mode: LaunchMode
   onAction: (a: UiActionName) => void
 }) {
-  if (!snap) return <Button size="icon-round" variant="default" disabled><Loader2 className="animate-spin" /></Button>
+  if (!snap) return <Button size="sm" variant="default" disabled><Loader2 className="animate-spin" />加载中</Button>
   const { state, busy } = snap
   const busyNow = busy || ['syncing', 'installing', 'building', 'starting', 'stopping'].includes(state)
 
   let action: UiActionName
   if (state === 'running') action = 'open-dsh'
-  else if (state === 'failed') action = mode === 'maintenance' ? 'update' : mode === 'dev' ? 'dev' : 'start'
-  else if (state === 'idle') action = mode === 'maintenance' ? 'update' : mode === 'dev' ? 'dev' : 'start'
+  else if (state === 'failed') action = mode === 'dev' ? 'dev' : 'start'
+  else if (state === 'idle') action = mode === 'dev' ? 'dev' : 'start'
   else if (state === 'stopping') action = 'stop'
   else action = 'cancel'
 
   const Icon = busyNow ? Loader2 : state === 'running' ? ExternalLink : state === 'failed' ? RefreshCw : state === 'stopping' ? StopCircle : Play
+  const label = state === 'idle'
+    ? mode === 'dev' ? '开发模式启动' : '普通启动'
+    : state === 'failed'
+      ? mode === 'dev' ? '重试开发模式' : '重试普通启动'
+      : ACTION_LABEL[state]
 
   return (
     <Button
-      size="icon-round"
+      size="sm"
       variant="default"
       disabled={busyNow}
-      title={ACTION_LABEL[state]}
+      title={label}
       data-tauri-drag-region="false"
       onClick={() => onAction(action)}
-      className={busyNow ? 'animate-pulse' : ''}
+      className={`min-w-[126px] ${busyNow ? 'animate-pulse' : ''}`}
     >
       <Icon className={busyNow ? 'animate-spin' : ''} />
+      {label}
     </Button>
   )
 }

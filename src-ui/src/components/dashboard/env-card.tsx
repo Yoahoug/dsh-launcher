@@ -22,21 +22,20 @@ export function EnvCard({ onInstallNode }: { onInstallNode: () => void }) {
     : '检测中…'
 
   return (
-    <Card>
+    <Card className="h-full">
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
-          <Cpu className="size-4 text-[var(--primary)]" />
+          <span className="flex size-8 items-center justify-center rounded-xl bg-[var(--primary)]/10">
+            <Cpu className="size-4 text-[var(--primary)]" />
+          </span>
           运行环境
         </CardTitle>
         <Badge variant={env?.warnings?.length ? 'danger' : 'success'}>{env?.warnings?.length ? '异常' : '正常'}</Badge>
       </CardHeader>
       <CardContent>
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-[var(--muted-foreground)]">
-          <span className="font-mono text-[var(--foreground)]">{nodeLabel}</span>
-          <span>·</span>
-          <span className="font-mono">{env?.pnpm ? `pnpm ${env.pnpm}` : 'pnpm 缺失'}</span>
-          <span>·</span>
-          <span className="font-mono">{env?.git ? `git ${env.git}` : 'git 缺失'}</span>
+        <div className="space-y-1.5 text-sm text-[var(--muted-foreground)]">
+          <p className="font-mono text-[var(--foreground)]">{nodeLabel}</p>
+          <p className="truncate font-mono text-xs">{env?.pnpm ? `pnpm ${env.pnpm}` : 'pnpm 缺失'} · {env?.git ? `git ${env.git}` : 'git 缺失'}</p>
         </div>
         {env?.warnings?.length ? (
           <p className="mt-2 text-xs leading-relaxed text-[var(--warning)]">{env.warnings[0]}</p>
