@@ -283,7 +283,7 @@ impl AppSnapshot {
 
 impl Default for SettingsSnapshot {
     fn default() -> Self {
-        let home = std::env::var("HOME").unwrap_or_default();
+        let home = crate::config::home_dir();
         Self {
             repo_path: format!("{home}/Desktop/deepseek-harness"),
             port: 3080,
