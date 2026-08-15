@@ -154,6 +154,14 @@ export interface ActionAccepted {
   already?: boolean
 }
 
+/** 检查更新结果(Rust check_for_update 命令返回)。 */
+export interface UpdateCheckResult {
+  ok: boolean
+  reason?: string | null
+  version?: string | null
+  error?: string | null
+}
+
 /** UI 侧动作(含不经过后端的纯界面动作)。 */
 export type UiActionName = ActionName | 'open-dsh' | 'cancel'
 

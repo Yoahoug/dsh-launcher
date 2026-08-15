@@ -15,6 +15,7 @@ import {
   type LogPage,
   type PageName,
   type SettingsSnapshot,
+  type UpdateCheckResult,
 } from '@/types/schema'
 
 /** 是否运行在 Tauri WebView 内(否则进入浏览器预览 mock)。 */
@@ -33,7 +34,7 @@ export interface DesktopApi {
   inspectEnvironment(): Promise<EnvironmentSnapshot>
   getDesktopSnapshot(): Promise<DesktopSnapshot>
   savePreferences(preferences: DesktopPreferences): Promise<DesktopPreferences>
-  checkForUpdate(): Promise<AppSnapshot['update']>
+  checkForUpdate(): Promise<UpdateCheckResult>
   applyUpdate(): Promise<ActionAccepted>
   openDsh(): Promise<void>
   openRepoDirectory(): Promise<void>

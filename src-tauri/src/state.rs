@@ -846,21 +846,147 @@ impl AppState {
 
     // ── 其它命令 ─────────────────────────────────────────
 
-    pub fn check_for_update(&self) -> UpdateResult {
-        UpdateResult {
-            ok: true,
-            reason: Some("自动更新由内置 updater 提供(v0.3.0)".into()),
-            version: Some(env!("CARGO_PKG_VERSION").into()),
-            error: None,
+    /// 更新快照的 update 字段并广播。
+    fn set_update(
+        &self,
+        app: &AppHandle,
+        partial: impl FnOnce(&mut crate::contract::UpdateSnapshot),
+    ) {
+        self.set_snapshot(app, |s| partial(&mut s.update));
+    }
+
+    /// 检查更新(Tauri updater,异步;结果同时写入 snapshot.update)。
+    pub async fn check_for_update(&self, app: &AppHandle) -> UpdateResult {
+        use tauri_plugin_updater::UpdaterExt;
+        self.set_update(app, |u| {
+            u.checking = true;
+            u.error = None;
+            u.message = None;
+        });
+        let updater = match app.updater() {
+            Ok(u) => u,
+            Err(e) => {
+                let msg = format!("updater 初始化失败:{e}");
+                self.set_update(app, |u| {
+                    u.checking = false;
+                    u.error = Some(msg.clone());
+                });
+                return UpdateResult {
+                    ok: false,
+                    reason: None,
+                    version: None,
+                    error: Some(msg),
+                };
+            }
+        };
+        match updater.check().await {
+            Ok(Some(update)) => {
+                self.set_update(app, |u| {
+                    u.checking = false;
+                    u.available = true;
+                    u.version = Some(update.version.clone());
+                    u.url = Some(update.download_url.to_string());
+                    u.notes = update.body.clone();
+                    u.message = Some(format!("发现新版本 v{}", update.version));
+                });
+                UpdateResult {
+                    ok: true,
+                    reason: Some(format!("发现新版本 v{}", update.version)),
+                    version: Some(update.version),
+                    error: None,
+                }
+            }
+            Ok(None) => {
+                self.set_update(app, |u| {
+                    u.checking = false;
+                    u.available = false;
+                    u.message = Some("当前已是最新版本".into());
+                });
+                UpdateResult {
+                    ok: true,
+                    reason: Some("当前已是最新版本".into()),
+                    version: None,
+                    error: None,
+                }
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                self.set_update(app, |u| {
+                    u.checking = false;
+                    u.error = Some(msg.clone());
+                });
+                UpdateResult {
+                    ok: false,
+                    reason: None,
+                    version: None,
+                    error: Some(msg),
+                }
+            }
         }
     }
 
-    pub fn apply_update(&self) -> ActionAccepted {
-        ActionAccepted {
-            ok: false,
-            reason: Some("自动更新由内置 updater 提供(v0.3.0,M5)".into()),
-            aborted: None,
-            already: None,
+    /// 下载并安装更新,完成后重启应用。
+    pub async fn apply_update(&self, app: &AppHandle) -> ActionAccepted {
+        use tauri_plugin_updater::UpdaterExt;
+        let updater = match app.updater() {
+            Ok(u) => u,
+            Err(e) => {
+                return ActionAccepted {
+                    ok: false,
+                    reason: Some(format!("updater 初始化失败:{e}")),
+                    aborted: None,
+                    already: None,
+                };
+            }
+        };
+        let update = match updater.check().await {
+            Ok(Some(u)) => u,
+            Ok(None) => {
+                return ActionAccepted {
+                    ok: false,
+                    reason: Some("没有可用的更新".into()),
+                    aborted: None,
+                    already: None,
+                };
+            }
+            Err(e) => {
+                return ActionAccepted {
+                    ok: false,
+                    reason: Some(format!("检查更新失败:{e}")),
+                    aborted: None,
+                    already: None,
+                };
+            }
+        };
+        self.set_update(app, |u| {
+            u.installing = true;
+            u.error = None;
+        });
+        match update
+            .download_and_install(|_chunks, _total| {}, || {})
+            .await
+        {
+            Ok(_) => {
+                self.log_hub.append(
+                    "launcher",
+                    crate::contract::LogLevel::Ok,
+                    "更新已安装,应用将自动重启",
+                );
+                // restart 返回 !,后续不可达
+                app.restart()
+            }
+            Err(e) => {
+                self.set_update(app, |u| {
+                    u.installing = false;
+                    u.error = Some(e.to_string());
+                });
+                ActionAccepted {
+                    ok: false,
+                    reason: Some(format!("下载安装失败:{e}")),
+                    aborted: None,
+                    already: None,
+                }
+            }
         }
     }
 

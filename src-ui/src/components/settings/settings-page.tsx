@@ -136,14 +136,21 @@ export function SettingsPage({ onBack }: { onBack: () => void }) {
     setChecking(true)
     try {
       const r = await api.checkForUpdate()
-      const message = r.message ?? r.error
-      if (r.available) {
-        toast({ kind: 'success', title: '发现新版本', detail: message ?? undefined })
-      } else if (!message) {
-        toast({ kind: 'success', title: '当前已是最新版本', detail: `v${snap?.version ?? '?'}` })
+      if (r.error) {
+        toast({ kind: 'warning', title: '检查更新失败', detail: r.error })
+      } else if (r.version) {
+        toast({
+          kind: 'success',
+          title: '发现新版本',
+          detail: `v${r.version} 已可用,正在下载安装…`,
+        })
+        const a = await api.applyUpdate()
+        if (!a.ok) toast({ kind: 'warning', title: '自动更新', detail: a.reason ?? undefined })
       } else {
-        toast({ kind: 'warning', title: '检查更新', detail: message })
+        toast({ kind: 'success', title: '当前已是最新版本', detail: `v${snap?.version ?? '?'}` })
       }
+    } catch (e) {
+      toast({ kind: 'warning', title: '检查更新失败', detail: String(e) })
     } finally {
       setChecking(false)
     }

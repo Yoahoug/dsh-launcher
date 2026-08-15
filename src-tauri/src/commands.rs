@@ -55,13 +55,19 @@ pub fn inspect_environment(state: State<'_, Arc<AppState>>) -> EnvironmentSnapsh
 }
 
 #[tauri::command]
-pub fn check_for_update(state: State<'_, Arc<AppState>>) -> UpdateResult {
-    state.check_for_update()
+pub async fn check_for_update(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<UpdateResult, String> {
+    Ok(state.check_for_update(&app).await)
 }
 
 #[tauri::command]
-pub fn apply_update(_app: AppHandle, state: State<'_, Arc<AppState>>) -> ActionAccepted {
-    state.apply_update()
+pub async fn apply_update(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<ActionAccepted, String> {
+    Ok(state.apply_update(&app).await)
 }
 
 /// 桌面信息:偏好 + 首次运行状态。

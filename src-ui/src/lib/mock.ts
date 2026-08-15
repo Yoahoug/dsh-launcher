@@ -188,7 +188,7 @@ export const mockApi: DesktopApi = {
     window.dispatchEvent(new CustomEvent('mock:prefs', { detail: prefs }))
     return { ...prefs }
   },
-  checkForUpdate: async () => current.update,
+  checkForUpdate: async () => ({ ok: true, reason: '已是最新版本(mock)', version: null, error: null }),
   applyUpdate: async () => ({ ok: true }),
   openDsh: async () => {},
   openRepoDirectory: async () => {},
