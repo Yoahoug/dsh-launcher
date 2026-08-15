@@ -31,6 +31,10 @@ pub struct Managed {
     pub job: windows_sys::Win32::Foundation::HANDLE,
 }
 
+/// Windows Job Object HANDLE 可跨线程使用,声明 Send(供 Mutex<Option<Managed>>)。
+#[cfg(windows)]
+unsafe impl Send for Managed {}
+
 impl Managed {
     fn new(
         pid: u32,
@@ -586,8 +590,8 @@ pub mod win {
         SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     };
     use windows_sys::Win32::System::Threading::{
-        OpenProcess, TerminateJobObject, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW,
-        PROCESS_QUERY_INFORMATION, PROCESS_TERMINATE,
+        OpenProcess, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, PROCESS_QUERY_INFORMATION,
+        PROCESS_TERMINATE,
     };
 
     /// 创建进程:CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW(GUI 无控制台闪窗)。

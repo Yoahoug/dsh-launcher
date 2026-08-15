@@ -12,8 +12,11 @@ use std::time::Duration;
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 /// fake pnpm:仅实现 `dsh web --port N`,契约与真实 dsh 一致
-/// (输出就绪行 `dsh web: http://127.0.0.1:N/`,并在该端口起 http.server)。
+/// (输出就绪行 `dsh web: http://127.0.0.1:N/`,并用 nc 在端口监听供就绪确认)。
+/// 仅 Unix(macOS/CI):Windows 上无 bash 语义,相关测试以 #[cfg(unix)] 排除。
+#[cfg(unix)]
 fn fake_bin_dir() -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
     let dir = std::env::temp_dir().join(format!("dsh-fakebin-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -31,7 +34,7 @@ if [ "$1" = "dsh" ] && [ "$2" = "web" ]; then
       *) shift ;;
     esac
   done
-  python3 -m http.server "$port" --bind 127.0.0.1 >/dev/null 2>&1 &
+  nc -l 127.0.0.1 "$port" >/dev/null 2>&1 &
   echo "dsh web: http://127.0.0.1:$port/"
   wait
 fi
@@ -39,11 +42,7 @@ exit 0
 "#,
     )
     .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&pnpm, std::fs::Permissions::from_mode(0o755));
-    }
+    let _ = std::fs::set_permissions(&pnpm, std::fs::Permissions::from_mode(0o755));
     dir
 }
 
@@ -63,6 +62,7 @@ fn make_tools() -> (Tools, std::path::PathBuf) {
 }
 
 /// 场景1:dsh web 完整生命周期(启动 → 就绪 → 停止)。
+#[cfg(unix)]
 #[test]
 fn spawn_web_ready_then_stop() {
     let _g = ENV_LOCK.lock().unwrap();
@@ -127,6 +127,7 @@ fn spawn_web_ready_then_stop() {
 }
 
 /// 场景2:端口占用检测(先占端口 → probe_port true;释放 → false)。
+#[cfg(unix)]
 #[test]
 fn probe_port_detects_occupation() {
     let _g = ENV_LOCK.lock().unwrap();
@@ -140,6 +141,7 @@ fn probe_port_detects_occupation() {
 }
 
 /// 场景2b:port_holder_pid 诊断能识别占用者。
+#[cfg(unix)]
 #[test]
 fn port_holder_diagnostics() {
     let _g = ENV_LOCK.lock().unwrap();
@@ -151,6 +153,7 @@ fn port_holder_diagnostics() {
 }
 
 /// 场景3:detach 语义(清空注册表,不杀进程;进程仍存活)。
+#[cfg(unix)]
 #[test]
 fn detach_keeps_child_alive() {
     let _g = ENV_LOCK.lock().unwrap();
@@ -204,6 +207,7 @@ fn detach_keeps_child_alive() {
 }
 
 /// 场景4:runtime.json 持久化 → recall 召回记录。
+#[cfg(unix)]
 #[test]
 fn persist_and_recall_running() {
     let _g = ENV_LOCK.lock().unwrap();
