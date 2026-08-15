@@ -1,19 +1,29 @@
 // dsh-launcher · Tauri 应用入口
 // M4 原生核心:LogHub + Supervisor + ActionCoordinator,无 Node daemon、无 3090。
+// 后续阶段:统一 Operation Coordinator(journal/取消)、签名 catalog、托管工具链、
+// clone 事务、chat WebView。
 #[cfg(test)]
 pub mod test_lock {
     /// 所有修改进程级 env 覆盖(DSH_LAUNCHER_*)的测试必须共用此锁串行执行。
     pub static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 }
+pub mod archive;
+pub mod catalog;
+pub mod chat;
+pub mod clone;
 mod commands;
 pub mod config;
 pub mod contract;
+pub mod download;
 mod lifecycle;
 pub mod log_hub;
 mod migration;
+pub mod ops;
+pub mod perf;
 mod preferences;
 pub mod services;
 mod state;
+pub mod toolchain;
 mod tray;
 
 use crate::contract::{LogEntry, LogLevel, EVENT_LOG_APPENDED};
@@ -31,6 +41,10 @@ fn recall_main_window(app: &tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 性能测量点:process_start(近似,main 入口即 run 首行)
+    let timings = Arc::new(crate::perf::BootTimings::new(std::time::Instant::now()));
+    timings.mark("process_start");
+
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             log::info!("收到第二实例请求,召回主窗口");
@@ -63,8 +77,17 @@ pub fn run() {
             commands::quit_app,
             commands::pick_directory,
             commands::clear_logs,
+            commands::perf_mark,
+            commands::get_perf_metrics,
+            commands::get_clone_state,
+            commands::submit_clone_request,
+            commands::open_clone_dialog,
+            commands::get_installation_snapshot,
+            commands::open_chat,
+            commands::close_chat,
+            commands::get_chat_state,
         ])
-        .setup(|app| {
+        .setup(move |app| {
             let app_handle = app.handle().clone();
 
             // 原生核心:LogHub(文件 + 事件广播)
@@ -85,6 +108,35 @@ pub fn run() {
                 ),
             );
 
+            // 崩溃恢复:先探测事实(journal 中 queued/running → interrupted),不续跑
+            let recovered = ops::recover_stale(&log_hub);
+            if !recovered.is_empty() {
+                log_hub.append(
+                    "launcher",
+                    LogLevel::Warn,
+                    &format!(
+                        "检测到 {} 个上次中断的操作,已标记为 interrupted(请检查后重试)",
+                        recovered.len()
+                    ),
+                );
+            }
+
+            // catalog 自检(签名失败即安全失败,阻止继续)
+            if let Err(e) = catalog::verify_embedded() {
+                log_hub.append("launcher", LogLevel::Err, &format!("catalog 自检失败:{e}"));
+                return Err(format!("catalog 自检失败(安全失败,拒绝启动):{e}").into());
+            }
+            let cat = catalog::load_catalog().expect("内置 catalog 必须可解析");
+            log_hub.append(
+                "launcher",
+                LogLevel::Info,
+                &format!(
+                    "runtime catalog v{} 验签通过({} 个组件,全部国内镜像)",
+                    cat.schema,
+                    cat.components.len()
+                ),
+            );
+
             let supervisor = Arc::new(Supervisor::new(log_hub.clone()));
 
             // 工具解析(可能为 None,命令层给出可读诊断)
@@ -99,12 +151,26 @@ pub fn run() {
                 log_hub.append(
                     "launcher",
                     LogLevel::Warn,
-                    "未找到 pnpm:启动/开发模式/更新并构建不可用,请在设置页查看诊断",
+                    "未找到 pnpm:启动/开发模式/更新并构建不可用,可「安装托管工具链」",
                 );
             }
+            // 托管工具优先(active pointer)
+            let tools = Tools {
+                pnpm: crate::toolchain::resolve_pnpm(&tools),
+                git: crate::toolchain::resolve_git(&tools),
+                dsh_node_dir: tools.dsh_node_dir,
+            };
 
-            let state = Arc::new(state::AppState::new(log_hub.clone(), supervisor, tools));
+            let ops = ops::OperationCoordinator::new(log_hub.clone(), Arc::new(|_| {}));
+            let state = Arc::new(state::AppState::new(
+                log_hub.clone(),
+                supervisor,
+                tools,
+                ops,
+                timings.clone(),
+            ));
             app.manage(state.clone());
+            app.manage(Arc::new(chat::ChatManager::new()));
 
             // 迁移旧 Node daemon(幂等):终止旧 daemon、清理 token、记录版本
             let report = migration::run(&state.log_hub);
@@ -149,6 +215,9 @@ pub fn run() {
             if let Err(e) = tray::setup(&app_handle) {
                 log::error!("托盘初始化失败: {e}");
             }
+            // 性能测量点:主窗口已创建并可见(首帧不等待网络/Git/更新/完整环境检查)
+            timings.mark("main_window_visible");
+            state.emit_perf(&app_handle);
 
             // 仓库状态快照不能阻塞 AppKit 首帧；桌面目录的 macOS 权限检查、
             // Git 锁或异常仓库都可能让外部命令变慢。
@@ -166,6 +235,9 @@ pub fn run() {
                     let _ = w.hide();
                 }
             }
+
+            timings.mark("tauri_ready");
+            state.emit_perf(&app_handle);
 
             Ok(())
         })

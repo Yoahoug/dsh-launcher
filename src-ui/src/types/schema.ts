@@ -64,6 +64,107 @@ export interface AppSnapshot {
   busy: boolean
   launcherPid: number
   update: UpdateSnapshot
+  /** 当前长任务(无任务时 null)。UI 只在 status === 'success' 时显示成功。 */
+  operation: OperationSnapshot | null
+  /** 动作矩阵:被禁用的动作与原因(按钮禁用时展示具体原因)。 */
+  disabledActions: DisabledAction[]
+}
+
+/** 长任务种类(exclusive-write 分组,同一时间只能运行一个)。 */
+export type OperationKind =
+  | 'install_node'
+  | 'install_git'
+  | 'install_pnpm'
+  | 'install_toolchain'
+  | 'clone_repo'
+  | 'full_setup'
+  | 'install_deps'
+  | 'build'
+  | 'update_rebuild'
+  | 'rebuild_restart'
+  | 'start_web'
+  | 'start_dev'
+  | 'stop_all'
+  | 'self_update'
+
+/** 操作状态:只有 success 才是终态成功。 */
+export type OperationStatus =
+  | 'queued'
+  | 'running'
+  | 'success'
+  | 'failed'
+  | 'cancelled'
+  | 'interrupted'
+
+export interface OperationSnapshot {
+  operationId: number
+  kind: OperationKind
+  status: OperationStatus
+  stage: string
+  progress: number | null
+  error: string | null
+  startedAt: number | null
+  finishedAt: number | null
+  cancellable: boolean
+}
+
+/** 被动作矩阵禁用的动作与原因。 */
+export interface DisabledAction {
+  action: string
+  reason: string
+}
+
+/** Clone 弹窗请求(UI → 后端)。 */
+export interface CloneRequest {
+  url: string
+  targetDir: string
+  source: string
+  branch: string | null
+}
+
+/** Clone 弹窗初始数据。 */
+export interface CloneDialogData {
+  lastGoodUrl: string | null
+  defaultTarget: string
+  officialUrl: string
+}
+
+/** Clone 状态(上次成功地址)。 */
+export interface CloneState {
+  lastGoodUrl: string | null
+}
+
+/** 已安装工具链组件。 */
+export interface InstalledComponent {
+  version: string
+  path: string
+  verified: boolean
+  source: string
+}
+
+/** 托管工具链安装快照。 */
+export interface InstallationSnapshot {
+  catalogVersion: number
+  node: InstalledComponent | null
+  git: InstalledComponent | null
+  pnpm: InstalledComponent | null
+  installedAt: number | null
+}
+
+/** 性能测量点。 */
+export interface PerfMark {
+  name: string
+  /** 相对 process_start 的毫秒数。 */
+  ms: number
+}
+
+/** chat WebView 状态(app://chat-state 事件 + get_chat_state)。 */
+export type ChatStatus = 'closed' | 'starting' | 'checking' | 'loading' | 'ready' | 'error'
+
+export interface ChatStateSnapshot {
+  status: ChatStatus
+  url: string | null
+  error: string | null
 }
 
 export interface LogEntry {
@@ -141,6 +242,12 @@ export type ActionName =
   | 'stop'
   | 'rebuild'
   | 'install-node'
+  | 'install-git'
+  | 'install-pnpm'
+  | 'install-toolchain'
+  | 'clone-repo'
+  | 'full-setup'
+  | 'cancel'
   | 'clear'
   | 'check-update'
   | 'apply-update'
@@ -173,8 +280,8 @@ export interface UpdateResult {
   update?: UpdateSnapshot
 }
 
-/** 页面名(托盘 app://open-page 事件取值)。 */
-export type PageName = 'dashboard' | 'logs' | 'settings' | 'first-run'
+/** 页面名(托盘 app://open-page 事件取值;repo/env 为 UI 内部子界面)。 */
+export type PageName = 'dashboard' | 'repo' | 'env' | 'logs' | 'settings' | 'first-run'
 
 /** 事件 payload 名(与 Rust emit 的 event 名对齐)。 */
 export const EVENTS = {
@@ -182,4 +289,6 @@ export const EVENTS = {
   LOG_APPENDED: 'app://log-appended',
   OPEN_PAGE: 'app://open-page',
   PREFERENCES_CHANGED: 'app://preferences-changed',
+  PERF_METRICS: 'app://perf-metrics',
+  CHAT_STATE: 'app://chat-state',
 } as const

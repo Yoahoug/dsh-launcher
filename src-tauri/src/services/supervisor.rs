@@ -166,28 +166,37 @@ impl Supervisor {
             return Err("Windows Job Object 创建失败".into());
         }
 
-        // 输出读取线程:逐行 → LogHub + 就绪行检测
+        // 输出读取线程(stdout/stderr 并发消费,防管道写满死锁):
+        // 两个 reader 线程各自逐行 → LogHub + 就绪行检测(共享 tail/ready)。
         let label: &'static str = "dsh web";
         let log = self.log.clone();
         let ready_flag = ready.clone();
-        let exited_flag = exited.clone();
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
-        let pid_for_reader = pid;
-        let on_ready = Arc::new(on_ready);
-        std::thread::spawn(move || {
-            let ready_re = regex::Regex::new(READY_RE).expect("就绪正则必须合法");
-            let mut lines = Vec::new();
-            let mut handle = |line: String, is_err: bool| {
+        let tail: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let ready_re = regex::Regex::new(READY_RE).expect("就绪正则必须合法");
+
+        let reader = |stream: Option<Box<dyn std::io::Read + Send>>,
+                      is_err: bool,
+                      log: Arc<LogHub>,
+                      ready_flag: Arc<Mutex<Option<String>>>,
+                      tail: Arc<Mutex<Vec<String>>>,
+                      ready_re: regex::Regex| {
+            let Some(stream) = stream else { return };
+            let reader = BufReader::new(stream);
+            for line in reader.lines().map_while(Result::ok) {
                 let level = if is_err {
                     LogLevel::Warn
                 } else {
                     LogLevel::Info
                 };
                 log.append(label, level, &line);
-                lines.push(line.clone());
-                if lines.len() > 100 {
-                    lines.remove(0);
+                {
+                    let mut t = tail.lock().unwrap();
+                    t.push(line.clone());
+                    if t.len() > 100 {
+                        t.remove(0);
+                    }
                 }
                 if let Some(cap) = ready_re.captures(&line) {
                     if let Some(url) = cap.get(1) {
@@ -197,23 +206,41 @@ impl Supervisor {
                         }
                     }
                 }
-            };
-            if let Some(mut out) = stdout {
-                let reader = BufReader::new(&mut out);
-                for line in reader.lines().map_while(Result::ok) {
-                    handle(line, false);
-                }
             }
-            if let Some(mut err) = stderr {
-                let reader = BufReader::new(&mut err);
-                for line in reader.lines().map_while(Result::ok) {
-                    handle(line, true);
-                }
+        };
+        let mut threads = Vec::new();
+        threads.push(std::thread::spawn({
+            let log = log.clone();
+            let ready_flag = ready_flag.clone();
+            let tail = tail.clone();
+            let ready_re = ready_re.clone();
+            move || {
+                reader(
+                    stdout.map(|s| Box::new(s) as Box<dyn std::io::Read + Send>),
+                    false,
+                    log,
+                    ready_flag,
+                    tail,
+                    ready_re,
+                )
             }
-            let _ = on_ready;
-            let _ = pid_for_reader;
-            exited_flag.store(true, Ordering::SeqCst);
-        });
+        }));
+        threads.push(std::thread::spawn({
+            let log = log.clone();
+            let ready_flag = ready_flag.clone();
+            let tail = tail.clone();
+            let ready_re = ready_re.clone();
+            move || {
+                reader(
+                    stderr.map(|s| Box::new(s) as Box<dyn std::io::Read + Send>),
+                    true,
+                    log,
+                    ready_flag,
+                    tail,
+                    ready_re,
+                )
+            }
+        }));
 
         // 等待子进程退出(监视线程,退出时置位)
         let exited_flag2 = exited.clone();
@@ -227,6 +254,9 @@ impl Supervisor {
                     &format!("进程退出 code={}", s.code().unwrap_or(-1)),
                 ),
                 Err(e) => log2.append(label, LogLevel::Err, &format!("wait 失败:{e}")),
+            }
+            for t in threads {
+                let _ = t.join();
             }
             exited_flag2.store(true, Ordering::SeqCst);
         });
@@ -289,32 +319,46 @@ impl Supervisor {
 
         let label: &'static str = "dev:web";
         let log = self.log.clone();
-        let exited_flag = exited.clone();
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
-        std::thread::spawn(move || {
-            let handle = |line: String, is_err: bool| {
-                let level = if is_err {
-                    LogLevel::Warn
-                } else {
-                    LogLevel::Info
-                };
-                log.append(label, level, &line);
+        // stdout/stderr 并发消费(防管道写满死锁)
+        let pump =
+            |stream: Option<Box<dyn std::io::Read + Send>>, is_err: bool, log: Arc<LogHub>| {
+                let Some(stream) = stream else { return };
+                let reader = BufReader::new(stream);
+                for line in reader.lines().map_while(Result::ok) {
+                    log.append(
+                        label,
+                        if is_err {
+                            LogLevel::Warn
+                        } else {
+                            LogLevel::Info
+                        },
+                        &line,
+                    );
+                }
             };
-            if let Some(mut out) = stdout {
-                let reader = BufReader::new(&mut out);
-                for line in reader.lines().map_while(Result::ok) {
-                    handle(line, false);
-                }
+        let mut reader_threads = Vec::new();
+        reader_threads.push(std::thread::spawn({
+            let log = log.clone();
+            move || {
+                pump(
+                    stdout.map(|s| Box::new(s) as Box<dyn std::io::Read + Send>),
+                    false,
+                    log,
+                )
             }
-            if let Some(mut err) = stderr {
-                let reader = BufReader::new(&mut err);
-                for line in reader.lines().map_while(Result::ok) {
-                    handle(line, true);
-                }
+        }));
+        reader_threads.push(std::thread::spawn({
+            let log = log.clone();
+            move || {
+                pump(
+                    stderr.map(|s| Box::new(s) as Box<dyn std::io::Read + Send>),
+                    true,
+                    log,
+                )
             }
-            exited_flag.store(true, Ordering::SeqCst);
-        });
+        }));
         let exited_flag2 = exited.clone();
         let log2 = self.log.clone();
         std::thread::spawn(move || {
@@ -326,6 +370,9 @@ impl Supervisor {
                     &format!("进程退出 code={}", s.code().unwrap_or(-1)),
                 ),
                 Err(e) => log2.append(label, LogLevel::Err, &format!("wait 失败:{e}")),
+            }
+            for t in reader_threads {
+                let _ = t.join();
             }
             exited_flag2.store(true, Ordering::SeqCst);
         });
@@ -343,9 +390,23 @@ impl Supervisor {
 
     /// 等待就绪(就绪行 + 端口确认);超时/早退返回诊断。
     pub fn wait_ready(&self, pid: u32, port: u16, timeout_ms: u64) -> Result<String, String> {
+        self.wait_ready_cancellable(pid, port, timeout_ms, &AtomicBool::new(false))
+    }
+
+    /// 可取消的就绪等待:取消标志置位立即返回 Err("cancelled")。
+    pub fn wait_ready_cancellable(
+        &self,
+        pid: u32,
+        port: u16,
+        timeout_ms: u64,
+        cancel: &AtomicBool,
+    ) -> Result<String, String> {
         let start = std::time::Instant::now();
         let deadline = start + Duration::from_millis(timeout_ms);
         loop {
+            if cancel.load(Ordering::SeqCst) {
+                return Err("cancelled".into());
+            }
             // 早退检测
             let (exited, ready) = {
                 let web = self.web.lock().unwrap();
@@ -549,7 +610,26 @@ pub fn port_holder_pid(port: u16) -> Option<u32> {
     }
     #[cfg(windows)]
     {
-        let _ = port;
+        use std::io::BufRead as _;
+        let out = std::process::Command::new("netstat")
+            .args(["-ano"])
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        let needle = format!(":{port}");
+        for line in text.lines() {
+            if !line.contains("LISTENING") {
+                continue;
+            }
+            // 行格式: proto local foreign state pid
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            if fields.len() < 5 {
+                continue;
+            }
+            if fields[1].ends_with(&needle) {
+                return fields[4].parse().ok();
+            }
+        }
         None
     }
 }
@@ -680,7 +760,23 @@ pub mod win {
     }
 
     pub fn process_cmdline(pid: u32) -> Option<String> {
-        let _ = pid;
-        None
+        // 只读诊断(recall 三重校验):PowerShell Get-CimInstance,不提权、不加载模块。
+        // Win10/11 自带 PowerShell;失败返回 None 只影响诊断精度,不影响主流程。
+        let script = format!(
+            "try {{ (Get-CimInstance Win32_Process -Filter \"ProcessId={pid}\").CommandLine }} catch {{ '' }}"
+        );
+        let out = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if s.is_empty() {
+            None
+        } else {
+            Some(s)
+        }
     }
 }

@@ -1,12 +1,13 @@
 import * as React from 'react'
 import { cn } from '@/lib/utils'
 
+/** 复刻 cc-switch 卡片:rounded-xl + border-border,悬停描边泛蓝。 */
 const Card = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
   ({ className, ...props }, ref) => (
     <div
       ref={ref}
       className={cn(
-        'rounded-[var(--radius-card)] border border-[var(--border)] bg-[var(--card)] shadow-[var(--shadow-card)] backdrop-blur-xl',
+        'relative overflow-hidden rounded-xl border border-border bg-card text-card-foreground transition-all duration-300 hover:border-border-hover hover:shadow-sm',
         className,
       )}
       {...props}
@@ -24,7 +25,7 @@ CardHeader.displayName = 'CardHeader'
 
 const CardTitle = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
   ({ className, ...props }, ref) => (
-    <div ref={ref} className={cn('text-[15px] font-semibold leading-none tracking-[-0.01em]', className)} {...props} />
+    <div ref={ref} className={cn('text-base font-semibold leading-none', className)} {...props} />
   ),
 )
 CardTitle.displayName = 'CardTitle'

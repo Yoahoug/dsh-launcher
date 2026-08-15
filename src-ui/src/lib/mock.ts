@@ -16,7 +16,7 @@ import type {
 import type { DesktopApi } from '@/lib/desktop-api'
 import { EVENTS } from '@/types/schema'
 
-const VERSION = '0.3.1'
+const VERSION = '0.4.0'
 
 const baseRepo = {
   branch: 'main',
@@ -46,6 +46,8 @@ function snapshot(partial: Partial<AppSnapshot>): AppSnapshot {
     busy: false,
     launcherPid: 4242,
     update: { mode: 'git', checking: false, available: false, version: null, url: null, size: null, notes: null, message: null, error: null, installing: false, progress: null },
+    operation: null,
+    disabledActions: [],
     ...partial,
   }
 }
@@ -179,8 +181,12 @@ export const mockApi: DesktopApi = {
     pnpm: '10.0.0', git: 'git version 2.47.0', warnings: [],
   }),
   getDesktopSnapshot: async (): Promise<DesktopSnapshot> => {
-    const firstRun = new URLSearchParams(window.location.search).get('first-run') === '1'
-    return { preferences: { ...prefs }, firstRunDone: !firstRun, version: VERSION }
+    const q = new URLSearchParams(window.location.search)
+    const firstRun = q.get('first-run') === '1'
+    // ?theme=dark|light|system 可临时覆盖主题(浏览器预览用)
+    const themeOverride = q.get('theme')
+    const preferences = themeOverride ? { ...prefs, theme: themeOverride as DesktopPreferences['theme'] } : { ...prefs }
+    return { preferences, firstRunDone: !firstRun, version: VERSION }
   },
   savePreferences: async (p: DesktopPreferences) => {
     prefs = { ...p }
@@ -191,10 +197,34 @@ export const mockApi: DesktopApi = {
   checkForUpdate: async () => ({ ok: true, reason: '已是最新版本(mock)', version: null, error: null }),
   applyUpdate: async () => ({ ok: true }),
   openDsh: async () => {},
+  openChat: async () => ({ status: 'ready', url: 'http://127.0.0.1:3080/', error: null }),
+  closeChat: async () => {},
+  getChatState: async () => ({ status: 'ready', url: 'http://127.0.0.1:3080/', error: null }),
   openRepoDirectory: async () => {},
   openLogDirectory: async () => {},
   pickDirectory: async () => '/Users/yoahoug/Desktop/deepseek-harness',
   quitApp: async () => {},
+  openCloneDialog: async () => ({
+    lastGoodUrl: 'https://github.com/deepseek-ai/deepseek-harness.git',
+    defaultTarget: '/Users/yoahoug/Desktop',
+    officialUrl: 'https://github.com/deepseek-ai/deepseek-harness.git',
+  }),
+  submitCloneRequest: async (req) => {
+    logEntry('git', 'info', `克隆请求:${req.url}(mock)`)
+    patch({ state: 'installing', busy: true, phase: '克隆中…' })
+    setTimeout(() => patch({ state: 'idle', busy: false, phase: '' }), 1200)
+    return { ok: true }
+  },
+  getCloneState: async () => ({ lastGoodUrl: 'https://github.com/deepseek-ai/deepseek-harness.git' }),
+  getInstallationSnapshot: async () => ({
+    catalogVersion: 1,
+    node: { version: 'v24.19.0', path: '/mock/node', verified: true, source: 'managed' },
+    git: null,
+    pnpm: null,
+    installedAt: Date.now(),
+  }),
+  perfMark: async () => {},
+  getPerfMetrics: async () => [{ name: 'process_start', ms: 0 }, { name: 'react_interactive', ms: 312 }],
   onStateChanged: async (cb) => {
     const h = (e: Event) => cb((e as CustomEvent<AppSnapshot>).detail)
     window.addEventListener('mock:state', h)
@@ -214,6 +244,11 @@ export const mockApi: DesktopApi = {
     const h = (e: Event) => cb((e as CustomEvent).detail as DesktopPreferences)
     window.addEventListener('mock:prefs', h)
     return () => window.removeEventListener('mock:prefs', h)
+  },
+  onPerfMetrics: async (cb) => {
+    const h = (e: Event) => cb((e as CustomEvent).detail as never)
+    window.addEventListener('mock:perf', h)
+    return () => window.removeEventListener('mock:perf', h)
   },
 }
 

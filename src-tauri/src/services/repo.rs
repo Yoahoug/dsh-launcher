@@ -53,14 +53,29 @@ impl RepoService {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
         let mut child = cmd.spawn().map_err(|e| format!("无法执行 git:{e}"))?;
-        let mut out = String::new();
-        let mut err = String::new();
+        // stdout/stderr 并发消费,防止单侧管道写满而死锁
+        let out: String;
+        let err: String;
         {
             use std::io::Read;
             let mut so = child.stdout.take().unwrap();
             let mut se = child.stderr.take().unwrap();
-            so.read_to_string(&mut out).ok();
-            se.read_to_string(&mut err).ok();
+            let (tx_out, rx_out) = std::sync::mpsc::channel::<String>();
+            let (tx_err, rx_err) = std::sync::mpsc::channel::<String>();
+            let h1 = std::thread::spawn(move || {
+                let mut buf = String::new();
+                let _ = so.read_to_string(&mut buf);
+                let _ = tx_out.send(buf);
+            });
+            let h2 = std::thread::spawn(move || {
+                let mut buf = String::new();
+                let _ = se.read_to_string(&mut buf);
+                let _ = tx_err.send(buf);
+            });
+            let _ = h1.join();
+            let _ = h2.join();
+            out = rx_out.recv().unwrap_or_default();
+            err = rx_err.recv().unwrap_or_default();
         }
         let status = child.wait().map_err(|e| format!("git wait 失败:{e}"))?;
         let code = status.code().unwrap_or(-1);

@@ -143,7 +143,10 @@ pub fn setup(app: &AppHandle) -> tauri::Result<TrayIcon<tauri::Wry>> {
             "status" => {}
             "show" => show_main_window(app),
             "open-dsh" => {
-                let _ = app.state::<Arc<AppState>>().open_dsh();
+                // M3:优先打开内嵌 chat WebView(零权限);失败回退系统浏览器
+                if crate::chat::open_chat(app).is_err() {
+                    let _ = app.state::<Arc<AppState>>().open_dsh();
+                }
             }
             "start" => {
                 let _ = app.state::<Arc<AppState>>().run_action(app, "start");

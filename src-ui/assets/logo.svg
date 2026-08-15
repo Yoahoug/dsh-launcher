@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- DSH Launcher 图标 master(确定性几何,无文字,16px 可辨)
+       符号:对话气泡(负形暗示 D/S)+ 终端输入光标;深海蓝→电光蓝 -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2563eb"/>
+      <stop offset="1" stop-color="#0b2e6b"/>
+    </linearGradient>
+    <linearGradient id="fg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#93c5fd"/>
+      <stop offset="1" stop-color="#dbeafe"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 圆角方块底座(12% 安全边距) -->
+  <rect x="104" y="104" width="816" height="816" rx="200" fill="url(#bg)"/>
+
+  <!-- 对话气泡:左上右圆角 + 底部左侧尾巴 -->
+  <path d="M 312 340
+           A 84 84 0 0 1 396 256
+           H 628
+           A 84 84 0 0 1 712 340
+           V 556
+           A 84 84 0 0 1 628 640
+           H 552
+           L 470 722
+           V 640
+           H 396
+           A 84 84 0 0 1 312 556
+           Z"
+        fill="url(#fg)"/>
+
+  <!-- 终端输入光标:底部粗下划线 + 提示方块(聊天输入语义) -->
+  <rect x="396" y="470" width="232" height="34" rx="17" fill="#1e3a8a"/>
+  <rect x="396" y="522" width="70" height="34" rx="17" fill="#1e3a8a"/>
+
+  <!-- 高光点(左上,小尺寸时保持简洁的几何层次) -->
+  <circle cx="344" cy="304" r="26" fill="#dbeafe" opacity="0.55"/>
+</svg>

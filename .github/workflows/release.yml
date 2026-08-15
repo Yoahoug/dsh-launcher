@@ -22,15 +22,16 @@ jobs:
             --title "DSH Launcher ${{ github.ref_name }}" \
             --notes "## DSH Launcher ${{ github.ref_name }}
 
-            DeepSeek Harness 桌面启动器 — Tauri 原生核心(无 Node daemon)。
+            DeepSeek Harness 桌面启动器 — Tauri 原生核心(无 Node daemon),内置托管工具链(签名 catalog + 国内镜像)。
 
             ### 安装说明
             - **macOS(Apple Silicon)**: 下载 \`dsh-launcher_${VER}_aarch64.dmg\` 并打开。未签名应用首次打开请在 Finder 中右键 →「打开」。
+            - **Windows 10/11 x64**: 下载 \`dsh-launcher_${VER}_x64-setup.exe\`(currentUser 安装,默认不需要管理员;首次运行需联网下载 WebView2 运行时,安装后也可在应用内查看说明)。
 
             ### 自动更新
             应用内「设置 → 更新 → 立即检查更新」即可在线升级到本版本。
 
-            > Windows 构建为后续开发方向，暂不提供。"
+            > 平台签名:未配置 Apple Developer ID / Windows Authenticode 证书时为无签名 Preview,系统会提示未知开发者。"
 
   build-macos:
     needs: create-release
@@ -71,8 +72,54 @@ jobs:
           find . -type f \( -name '*.dmg' -o -name '*.tar.gz' \) -print0 | \
             xargs -0 -I{} gh release upload "${{ github.ref_name }}" "{}" --clobber
 
+  build-windows:
+    needs: create-release
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: pnpm install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build NSIS installer
+        shell: bash
+        run: pnpm tauri build --bundles nsis
+
+      - name: Sign updater artifact (NSIS)
+        shell: bash
+        env:
+          KEY_CONTENT: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          KEY_PASS: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          printf '%s' "$KEY_CONTENT" > /tmp/updater.key
+          EXE=$(ls src-tauri/target/release/bundle/nsis/*setup.exe | head -1)
+          echo "signing: $EXE"
+          pnpm tauri signer sign -f /tmp/updater.key -p "$KEY_PASS" "$EXE"
+          ls -la src-tauri/target/release/bundle/nsis/
+
+      - name: Upload Windows assets
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd src-tauri/target/release/bundle/nsis
+          for f in *.exe *.sig; do
+            gh release upload "${{ github.ref_name }}" "$f" --clobber
+          done
+
   sign:
-    needs: build-macos
+    needs: [build-macos, build-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -87,16 +134,16 @@ jobs:
       - name: pnpm install
         run: pnpm install --frozen-lockfile
 
-      - name: Download updater artifact
+      - name: Download updater artifacts
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p updater
           gh release download "${{ github.ref_name }}" \
-            --pattern '*.tar.gz' --dir updater
+            --pattern '*.tar.gz' --pattern '*.sig' --dir updater
           ls -la updater
 
-      - name: Sign updater artifact
+      - name: Sign macOS updater artifact
         env:
           KEY_CONTENT: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           KEY_PASS: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -119,15 +166,23 @@ jobs:
             const tag = process.env.TAG;
             const version = tag.replace(/^v/, "");
             const entries = fs.readdirSync("updater");
-            const sigFiles = entries.filter((f) => f.endsWith(".sig"));
-            if (sigFiles.length !== 1) {
-              throw new Error("expected exactly one .sig file, got: " + entries.join(","));
-            }
-            const signature = fs.readFileSync(`updater/${sigFiles[0]}`, "utf8").trim();
+            const read = (name) => {
+              const f = entries.find((x) => x.includes(name));
+              if (!f) return null;
+              return fs.readFileSync(`updater/${f}`, "utf8").trim();
+            };
+            const macSig = read("aarch64.app.tar.gz.sig");
+            const winSig = read("x64-setup.exe.sig");
+            if (!macSig) throw new Error("missing macOS signature");
+            if (!winSig) throw new Error("missing Windows signature");
             const platforms = {
               "darwin-aarch64": {
-                signature,
+                signature: macSig,
                 url: `https://github.com/Yoahoug/dsh-launcher/releases/download/${tag}/dsh-launcher_aarch64.app.tar.gz`,
+              },
+              "windows-x86_64": {
+                signature: winSig,
+                url: `https://github.com/Yoahoug/dsh-launcher/releases/download/${tag}/dsh-launcher_${version}_x64-setup.exe`,
               },
             };
             const json = {

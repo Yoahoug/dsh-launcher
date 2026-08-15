@@ -69,6 +69,115 @@ pub struct UpdateSnapshot {
 }
 
 /// 与 src/state.mjs `state` 对象对齐的完整快照。
+/// 长任务种类。
+/// exclusive-write 分组(安装/克隆/构建/更新/自更新)同一时间只能运行一个;
+/// start/dev 与 exclusive-write 互斥;stop/cancel 始终可发起。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationKind {
+    InstallNode,
+    InstallGit,
+    InstallPnpm,
+    InstallToolchain,
+    CloneRepo,
+    FullSetup,
+    InstallDeps,
+    Build,
+    UpdateRebuild,
+    RebuildRestart,
+    StartWeb,
+    StartDev,
+    StopAll,
+    SelfUpdate,
+}
+
+impl OperationKind {
+    /// 是否属于 exclusive-write(同一时间只能运行一个)。
+    pub fn is_exclusive_write(self) -> bool {
+        matches!(
+            self,
+            OperationKind::InstallNode
+                | OperationKind::InstallGit
+                | OperationKind::InstallPnpm
+                | OperationKind::InstallToolchain
+                | OperationKind::CloneRepo
+                | OperationKind::FullSetup
+                | OperationKind::InstallDeps
+                | OperationKind::Build
+                | OperationKind::UpdateRebuild
+                | OperationKind::RebuildRestart
+                | OperationKind::SelfUpdate
+        )
+    }
+
+    /// 中文动作名(日志/UI 提示)。
+    pub fn label(self) -> &'static str {
+        match self {
+            OperationKind::InstallNode => "安装 Node",
+            OperationKind::InstallGit => "安装 Git",
+            OperationKind::InstallPnpm => "安装 pnpm",
+            OperationKind::InstallToolchain => "安装工具链",
+            OperationKind::CloneRepo => "克隆仓库",
+            OperationKind::FullSetup => "一键安装",
+            OperationKind::InstallDeps => "安装依赖",
+            OperationKind::Build => "构建",
+            OperationKind::UpdateRebuild => "更新并构建",
+            OperationKind::RebuildRestart => "重建并重启",
+            OperationKind::StartWeb => "启动 dsh",
+            OperationKind::StartDev => "启动开发模式",
+            OperationKind::StopAll => "停止",
+            OperationKind::SelfUpdate => "应用自更新",
+        }
+    }
+}
+
+/// 操作状态:只有 Success 才是终态成功;Failed/Cancelled/Interrupted 均为终态失败。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationStatus {
+    Queued,
+    Running,
+    Success,
+    Failed,
+    Cancelled,
+    Interrupted,
+}
+
+impl OperationStatus {
+    pub fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            OperationStatus::Success
+                | OperationStatus::Failed
+                | OperationStatus::Cancelled
+                | OperationStatus::Interrupted
+        )
+    }
+}
+
+/// 单个长任务的可见快照(写入 AppSnapshot.operation)。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationSnapshot {
+    pub operation_id: u64,
+    pub kind: OperationKind,
+    pub status: OperationStatus,
+    pub stage: String,
+    pub progress: Option<u8>,
+    pub error: Option<String>,
+    pub started_at: Option<i64>,
+    pub finished_at: Option<i64>,
+    pub cancellable: bool,
+}
+
+/// 被动作矩阵禁用的动作及其具体原因(UI 按钮禁用时展示)。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DisabledAction {
+    pub action: String,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSnapshot {
@@ -87,6 +196,10 @@ pub struct AppSnapshot {
     pub busy: bool,
     pub launcher_pid: u32,
     pub update: UpdateSnapshot,
+    /// 当前长任务(无任务时 None)。UI 只在 status == success 时显示成功。
+    pub operation: Option<OperationSnapshot>,
+    /// 动作矩阵:被禁用的动作与原因。
+    pub disabled_actions: Vec<DisabledAction>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -277,6 +390,8 @@ impl AppSnapshot {
                 installing: false,
                 progress: None,
             },
+            operation: None,
+            disabled_actions: Vec::new(),
         }
     }
 }
@@ -344,5 +459,66 @@ mod tests {
             serde_json::to_string(&LauncherMode::Dev).unwrap(),
             r#""dev""#
         );
+    }
+
+    #[test]
+    fn operation_kind_exclusive_write_groups() {
+        assert!(OperationKind::InstallNode.is_exclusive_write());
+        assert!(OperationKind::CloneRepo.is_exclusive_write());
+        assert!(OperationKind::FullSetup.is_exclusive_write());
+        assert!(OperationKind::UpdateRebuild.is_exclusive_write());
+        assert!(OperationKind::SelfUpdate.is_exclusive_write());
+        assert!(!OperationKind::StartWeb.is_exclusive_write());
+        assert!(!OperationKind::StartDev.is_exclusive_write());
+        assert!(!OperationKind::StopAll.is_exclusive_write());
+    }
+
+    #[test]
+    fn operation_snapshot_serde_camel() {
+        let op = OperationSnapshot {
+            operation_id: 7,
+            kind: OperationKind::CloneRepo,
+            status: OperationStatus::Running,
+            stage: "克隆中…".into(),
+            progress: Some(42),
+            error: None,
+            started_at: Some(1),
+            finished_at: None,
+            cancellable: true,
+        };
+        let j = serde_json::to_string(&op).unwrap();
+        assert!(j.contains("\"operationId\":7"), "{j}");
+        assert!(j.contains("\"kind\":\"clone_repo\""), "{j}");
+        assert!(j.contains("\"status\":\"running\""), "{j}");
+        let back: OperationSnapshot = serde_json::from_str(&j).unwrap();
+        assert_eq!(back, op);
+        assert!(!OperationStatus::Running.is_terminal());
+        assert!(OperationStatus::Success.is_terminal());
+        assert!(OperationStatus::Cancelled.is_terminal());
+        assert!(OperationStatus::Interrupted.is_terminal());
+    }
+
+    #[test]
+    fn snapshot_roundtrip_with_operation_and_disabled() {
+        let mut s = AppSnapshot::mock_idle();
+        s.operation = Some(OperationSnapshot {
+            operation_id: 3,
+            kind: OperationKind::InstallNode,
+            status: OperationStatus::Running,
+            stage: "下载中…".into(),
+            progress: None,
+            error: None,
+            started_at: None,
+            finished_at: None,
+            cancellable: true,
+        });
+        s.disabled_actions = vec![DisabledAction {
+            action: "start".into(),
+            reason: "正在安装 Node".into(),
+        }];
+        let j = serde_json::to_string(&s).unwrap();
+        let back: AppSnapshot = serde_json::from_str(&j).unwrap();
+        assert_eq!(back, s);
+        assert!(j.contains("\"operationId\":3"), "{j}");
     }
 }

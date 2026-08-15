@@ -1,10 +1,11 @@
 // dsh-launcher · UI 回归:主流程(First-run 组件流程 → Dashboard → Logs → Settings)
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import App from '@/App'
 import { FirstRunPage } from '@/components/first-run/first-run'
 import { ToastProvider } from '@/components/ui/toast'
+import { mockApi } from '@/lib/mock'
 
 describe('FirstRunPage 流程', () => {
   it('欢迎 → 选择仓库 → 检测环境 → 完成', async () => {
@@ -44,13 +45,25 @@ describe('App 首次运行门控', () => {
 })
 
 describe('App 页面导航', () => {
+  it('首页运行态的打开按钮使用内嵌 chat', async () => {
+    const openChat = vi.spyOn(mockApi, 'openChat')
+    const openDsh = vi.spyOn(mockApi, 'openDsh')
+    render(<App />)
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: '普通启动' }))
+    await user.click(await screen.findByRole('button', { name: '打开 dsh' }, { timeout: 2_000 }))
+    expect(openChat).toHaveBeenCalledOnce()
+    expect(openDsh).not.toHaveBeenCalled()
+  })
+
   it('日志页可进入并可返回', async () => {
     render(<App />)
     const user = userEvent.setup()
     await screen.findByText('DeepSeek Harness')
     await user.click(screen.getByTitle('日志'))
     expect(await screen.findByRole('log')).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: /← 返回/ }))
+    // 侧边栏「服务」返回主页
+    await user.click(screen.getByRole('tab', { name: '服务' }))
     expect(await screen.findByText('DeepSeek Harness')).toBeInTheDocument()
   })
 
@@ -60,7 +73,9 @@ describe('App 页面导航', () => {
     await screen.findByText('DeepSeek Harness')
     await user.click(screen.getByTitle('设置'))
     expect(await screen.findByText(/仓库路径/)).toBeInTheDocument()
-    await user.selectOptions(screen.getByRole('combobox', { name: '主题' }), 'dark')
+    // 切换到「外观」分类修改主题
+    await user.click(screen.getByRole('tab', { name: '外观' }))
+    await user.selectOptions(await screen.findByRole('combobox', { name: '主题' }), 'dark')
     await user.click(screen.getByRole('button', { name: '保存' }))
     expect(await screen.findByText('设置已保存')).toBeInTheDocument()
   })

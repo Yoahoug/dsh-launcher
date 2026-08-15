@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { ArrowDown, ArrowLeft, Copy, Eraser, FolderOpen, Pause, Play, Search } from 'lucide-react'
+import { ArrowDown, Copy, Eraser, FolderOpen, Pause, Play, Search } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
@@ -19,10 +19,10 @@ const LEVELS: { value: LogLevel | 'all'; label: string }[] = [
 ]
 
 const LEVEL_CLASS: Record<LogLevel, string> = {
-  info: 'text-[var(--muted-foreground)]',
-  ok: 'text-[var(--success)]',
-  warn: 'text-[var(--warning)]',
-  err: 'text-[var(--danger)]',
+  info: 'text-muted-foreground',
+  ok: 'text-emerald-500',
+  warn: 'text-amber-500',
+  err: 'text-red-500',
 }
 
 function fmtTime(ts: number): string {
@@ -32,7 +32,7 @@ function fmtTime(ts: number): string {
 }
 
 /** 日志页:历史 ring + 实时订阅 + 筛选/搜索/暂停/复制/清空/打开目录。 */
-export function LogsPage({ initialLevel, onBack }: { initialLevel?: LogLevel; onBack: () => void }) {
+export function LogsPage({ initialLevel, onBack: _onBack }: { initialLevel?: LogLevel; onBack: () => void }) {
   const [logs, setLogs] = React.useState<LogEntry[]>([])
   const [sources, setSources] = React.useState<string[]>([])
   const [source, setSource] = React.useState('all')
@@ -113,35 +113,9 @@ export function LogsPage({ initialLevel, onBack }: { initialLevel?: LogLevel; on
   const empty = filtered.length === 0
 
   return (
-    <main className="flex flex-1 flex-col overflow-hidden">
-      <div
-        data-tauri-drag-region
-        className="flex h-[72px] shrink-0 items-center gap-3 border-b border-[var(--border)] bg-[var(--header)] pl-[84px] pr-5 backdrop-blur-2xl"
-      >
-        <Button variant="ghost" size="sm" onClick={onBack} aria-label="← 返回" data-tauri-drag-region="false">
-          <ArrowLeft /> 返回
-        </Button>
-        <div data-tauri-drag-region>
-          <h2 className="text-[15px] font-semibold" data-tauri-drag-region>运行日志</h2>
-          <p className="mt-0.5 text-[10px] text-[var(--muted-foreground)]" data-tauri-drag-region>{filtered.length} 条记录 · 最多保留 {RING_CAP} 条</p>
-        </div>
-        <div className="flex-1" data-tauri-drag-region />
-        <Button variant={paused ? 'primary' : 'ghost'} size="sm" onClick={() => setPaused((p) => !p)} data-tauri-drag-region="false">
-          {paused ? <Play /> : <Pause />}
-          {paused ? '继续' : '暂停'}
-        </Button>
-        <Button variant="ghost" size="sm" onClick={() => void copy(filtered.map((l) => l.text).join('\n'), '全部日志')} data-tauri-drag-region="false">
-          <Copy /> 复制
-        </Button>
-        <Button variant="ghost" size="sm" onClick={() => void clear()} data-tauri-drag-region="false">
-          <Eraser /> 清空
-        </Button>
-        <Button variant="ghost" size="sm" onClick={() => void api.openLogDirectory()} data-tauri-drag-region="false">
-          <FolderOpen /> 打开目录
-        </Button>
-      </div>
-
-      <div className="flex shrink-0 items-center gap-2 border-b border-[var(--border)] bg-[var(--card)]/70 px-5 py-2.5">
+    <div className="flex h-full flex-col">
+      {/* 工具栏:来源/级别/搜索 + 动作 */}
+      <div className="flex shrink-0 items-center gap-2 border-b border-border bg-card/70 px-5 py-2.5">
         <Select
           className="h-8 w-36 text-xs"
           options={[
@@ -160,7 +134,7 @@ export function LogsPage({ initialLevel, onBack }: { initialLevel?: LogLevel; on
           aria-label="日志级别"
         />
         <div className="relative flex-1">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-[var(--muted-foreground)]" />
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
             className="h-8 w-full pl-8 text-xs"
             placeholder="搜索日志…"
@@ -168,27 +142,43 @@ export function LogsPage({ initialLevel, onBack }: { initialLevel?: LogLevel; on
             onChange={(e) => setQuery(e.target.value)}
           />
         </div>
+        <div className="ml-auto flex items-center gap-1">
+          <Button variant={paused ? 'primary' : 'ghost'} size="sm" onClick={() => setPaused((p) => !p)}>
+            {paused ? <Play /> : <Pause />}
+            {paused ? '继续' : '暂停'}
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => void copy(filtered.map((l) => l.text).join('\n'), '全部日志')}>
+            <Copy /> 复制
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => void clear()}>
+            <Eraser /> 清空
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => void api.openLogDirectory()}>
+            <FolderOpen /> 打开目录
+          </Button>
+        </div>
       </div>
 
+      {/* 日志流 */}
       <div
         ref={boxRef}
         onScroll={onScroll}
-        className="relative m-4 mt-3 flex-1 overflow-y-auto rounded-2xl border border-[var(--border)] bg-[var(--card)] px-4 py-3 font-mono text-[12px] leading-relaxed shadow-[var(--shadow-card)]"
+        className="relative m-4 mt-3 flex-1 overflow-y-auto rounded-xl border border-border bg-card px-4 py-3 font-mono text-xs leading-relaxed shadow-sm"
         role="log"
         aria-live="polite"
       >
         {empty ? (
-          <div className="flex h-full flex-col items-center justify-center gap-1 text-[var(--muted-foreground)]">
+          <div className="flex h-full flex-col items-center justify-center gap-1 text-muted-foreground">
             <p>暂无日志</p>
             <p className="text-xs">执行动作后日志会实时出现在这里</p>
           </div>
         ) : (
           filtered.map((l) => (
-            <div key={l.id} className="-mx-2 flex gap-3 rounded-lg px-2 py-1 whitespace-pre-wrap break-all hover:bg-[var(--muted)]/70">
-              <span className="shrink-0 text-[var(--muted-foreground)]">{fmtTime(l.ts)}</span>
+            <div key={l.id} className="-mx-2 flex gap-3 rounded-lg px-2 py-1 whitespace-pre-wrap break-all hover:bg-muted/70">
+              <span className="shrink-0 text-muted-foreground">{fmtTime(l.ts)}</span>
               <span className={cn('w-12 shrink-0 uppercase', LEVEL_CLASS[l.level])}>{l.level}</span>
-              <span className="w-16 shrink-0 text-[var(--muted-foreground)]">{l.src}</span>
-              <span className="min-w-0 flex-1 text-[var(--foreground)]">{l.text}</span>
+              <span className="w-16 shrink-0 text-muted-foreground">{l.src}</span>
+              <span className="min-w-0 flex-1 text-foreground">{l.text}</span>
             </div>
           ))
         )}
@@ -200,13 +190,13 @@ export function LogsPage({ initialLevel, onBack }: { initialLevel?: LogLevel; on
               const box = boxRef.current
               if (box) box.scrollTop = box.scrollHeight
             }}
-            className="sticky bottom-3 left-1/2 -translate-x-1/2 rounded-full border border-[var(--border)] bg-[var(--card)] px-3 py-1.5 text-xs font-medium shadow-md transition-colors hover:bg-[var(--muted)]"
+            className="sticky bottom-3 left-1/2 -translate-x-1/2 rounded-full border border-border bg-card px-3 py-1.5 text-xs font-medium shadow-md transition-colors hover:bg-muted"
           >
             <ArrowDown className="mr-1 inline size-3.5" />
             跳到底部
           </button>
         )}
       </div>
-    </main>
+    </div>
   )
 }

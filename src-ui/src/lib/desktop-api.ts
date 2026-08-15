@@ -6,14 +6,20 @@ import type { UnlistenFn } from '@tauri-apps/api/event'
 import {
   EVENTS,
   type ActionAccepted,
+  type ChatStateSnapshot,
   type ActionName,
   type AppSnapshot,
+  type CloneDialogData,
+  type CloneRequest,
+  type CloneState,
   type DesktopPreferences,
   type DesktopSnapshot,
   type EnvironmentSnapshot,
+  type InstallationSnapshot,
   type LogEntry,
   type LogPage,
   type PageName,
+  type PerfMark,
   type SettingsSnapshot,
   type UpdateCheckResult,
 } from '@/types/schema'
@@ -37,14 +43,28 @@ export interface DesktopApi {
   checkForUpdate(): Promise<UpdateCheckResult>
   applyUpdate(): Promise<ActionAccepted>
   openDsh(): Promise<void>
+  /** M3:打开内嵌 chat WebView(零权限;服务未就绪时先启动)。 */
+  openChat(): Promise<ChatStateSnapshot>
+  closeChat(): Promise<void>
+  getChatState(): Promise<ChatStateSnapshot>
   openRepoDirectory(): Promise<void>
   openLogDirectory(): Promise<void>
   pickDirectory(): Promise<string | null>
   quitApp(): Promise<void>
+  // M1:Clone 弹窗 + 托管工具链
+  openCloneDialog(): Promise<CloneDialogData>
+  submitCloneRequest(request: CloneRequest, full: boolean): Promise<ActionAccepted>
+  getCloneState(): Promise<CloneState>
+  getInstallationSnapshot(): Promise<InstallationSnapshot>
+  // M0:性能测量
+  perfMark(name: string): Promise<void>
+  getPerfMetrics(): Promise<PerfMark[]>
+  // M3:chat WebView(事件驱动,无命令)
   onStateChanged(cb: (snapshot: AppSnapshot) => void): Promise<UnlistenFn>
   onLogAppended(cb: (entry: LogEntry) => void): Promise<UnlistenFn>
   onOpenPage(cb: (page: PageName) => void): Promise<UnlistenFn>
   onPreferencesChanged(cb: (prefs: DesktopPreferences) => void): Promise<UnlistenFn>
+  onPerfMetrics(cb: (marks: PerfMark[]) => void): Promise<UnlistenFn>
 }
 
 /** Tauri 实现:command 名与 src-tauri/src/commands.rs 对齐。 */
@@ -62,13 +82,23 @@ export const desktopApi: DesktopApi = {
   checkForUpdate: () => invoke('check_for_update'),
   applyUpdate: () => invoke('apply_update'),
   openDsh: () => invoke('open_dsh'),
+  openChat: () => invoke('open_chat'),
+  closeChat: () => invoke('close_chat'),
+  getChatState: () => invoke('get_chat_state'),
   openRepoDirectory: () => invoke('open_repo_directory'),
   openLogDirectory: () => invoke('open_log_directory'),
   pickDirectory: () => invoke('pick_directory'),
   quitApp: () => invoke('quit_app'),
+  openCloneDialog: () => invoke('open_clone_dialog'),
+  submitCloneRequest: (request, full) => invoke('submit_clone_request', { request, full }),
+  getCloneState: () => invoke('get_clone_state'),
+  getInstallationSnapshot: () => invoke('get_installation_snapshot'),
+  perfMark: (name) => invoke('perf_mark', { name }),
+  getPerfMetrics: () => invoke('get_perf_metrics'),
   onStateChanged: (cb) => listen<AppSnapshot>(EVENTS.STATE_CHANGED, (e) => cb(e.payload)),
   onLogAppended: (cb) => listen<LogEntry>(EVENTS.LOG_APPENDED, (e) => cb(e.payload)),
   onOpenPage: (cb) => listen<PageName>(EVENTS.OPEN_PAGE, (e) => cb(e.payload)),
   onPreferencesChanged: (cb) =>
     listen<DesktopPreferences>(EVENTS.PREFERENCES_CHANGED, (e) => cb(e.payload)),
+  onPerfMetrics: (cb) => listen<PerfMark[]>(EVENTS.PERF_METRICS, (e) => cb(e.payload)),
 }

@@ -1,0 +1,61 @@
+{
+  "schema": 1,
+  "generated_at": "2026-08-15",
+  "note": "Runtime catalog v1: 固定 component/version/platform/URL/size/SHA-256。URL 全部为国内镜像(npmmirror),catalog 是唯一下载来源,不静默回退境外。字节完整性已对照官方源逐一验证(nodejs.org SHASUMS256.txt / git-for-windows GitHub Release / registry.npmjs.org)。",
+  "components": [
+    {
+      "id": "node",
+      "version": "v24.9.0",
+      "platform": "win-x64",
+      "kind": "zip",
+      "url": "https://registry.npmmirror.com/-/binary/node/v24.9.0/node-v24.9.0-win-x64.zip",
+      "size": 36405077,
+      "sha256": "6873514c3e6a012917cc6f95ce48a6289253370d025f1b69db290d70feebfa6e"
+    },
+    {
+      "id": "node",
+      "version": "v24.9.0",
+      "platform": "darwin-arm64",
+      "kind": "tar.gz",
+      "url": "https://registry.npmmirror.com/-/binary/node/v24.9.0/node-v24.9.0-darwin-arm64.tar.gz",
+      "size": 51124089,
+      "sha256": "961024296c2a8e60daed0784f8b61e0fab5c51d197502a92eff052c72b53209b"
+    },
+    {
+      "id": "node",
+      "version": "v24.9.0",
+      "platform": "darwin-x64",
+      "kind": "tar.gz",
+      "url": "https://registry.npmmirror.com/-/binary/node/v24.9.0/node-v24.9.0-darwin-x64.tar.gz",
+      "size": 52300445,
+      "sha256": "6c9ac12d3160538d96d456dc59a8fec1479e3f8b20bfc0d61bc809eb9ec11417"
+    },
+    {
+      "id": "mingit",
+      "version": "2.55.0.4",
+      "platform": "win-x64",
+      "kind": "zip",
+      "url": "https://registry.npmmirror.com/-/binary/git-for-windows/v2.55.0.windows.4/MinGit-2.55.0.4-64-bit.zip",
+      "size": 38792847,
+      "sha256": "4e03f94c2ffbf70be337e005cee02661c732dbfc81031a078bda9299b9a7d644"
+    },
+    {
+      "id": "pnpm",
+      "version": "11.7.0",
+      "platform": "any",
+      "kind": "tgz",
+      "url": "https://registry.npmmirror.com/pnpm/-/pnpm-11.7.0.tgz",
+      "size": 4590455,
+      "sha256": "deafa7ec98a1218b6a047289b92fbe2395c1e22d3495bb711653013218ee15ee"
+    },
+    {
+      "id": "pnpm",
+      "version": "11.21.0",
+      "platform": "any",
+      "kind": "tgz",
+      "url": "https://registry.npmmirror.com/pnpm/-/pnpm-11.21.0.tgz",
+      "size": 8799855,
+      "sha256": "87237d37eadb79dc626a0576eb3a52d23d70422c323ae5e00fc05c91f4323780"
+    }
+  ]
+}

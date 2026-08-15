@@ -1,6 +1,6 @@
 [package]
 name = "dsh-launcher"
-version = "0.3.1"
+version = "0.4.0"
 description = "DSH Launcher — DeepSeek Harness 启动器桌面版"
 authors = ["Yoahoug"]
 edition = "2021"
@@ -29,9 +29,22 @@ sha2 = "0.10"
 libc = "0.2"
 regex = "1.13.1"
 tauri-plugin-updater = "2"
+# M1:签名 runtime catalog(Ed25519 验签,内置公钥;default features 含 std/signature)
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+hex = "0.4"
+# M1:安全解压(zip/tar.gz,防 Zip Slip / 符号链接逃逸)
+zip = { version = "2", default-features = false, features = ["deflate"] }
+tar = "0.4"
+flate2 = "1"
+# M1:URL 校验(https / 受控 ssh;拒绝凭证)
+url = "2"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Console", "Win32_Foundation", "Win32_System_ProcessStatus"] }
+
+[dev-dependencies]
+# dev-only:examples/catalog_tool.rs 生成 Ed25519 密钥用
+rand_core = { version = "0.6", features = ["getrandom"] }
 
 [profile.release]
 codegen-units = 1

@@ -1,17 +1,22 @@
 // dsh-launcher · 应用状态与动作协调器(Rust 原生核心,无 HTTP/轮询)
-// 唯一状态机:所有动作从这里发起;epoch 递增使进行中的旧流程放弃(不能回写状态);
-// 状态变化直接 emit Tauri 事件。
+// 唯一状态机:所有动作从这里发起;长任务通过 OperationCoordinator 获得 operationId、
+// 取消令牌与 journal;只有 terminal success 才表示成功。
+// 动作矩阵:exclusive-write(安装/克隆/构建/更新)同一时间只能一个;start/dev 与
+// exclusive-write 互斥;stop/cancel、日志、最小化保持可用;禁用按钮给出具体原因。
 use crate::config;
 use crate::contract::{
-    ActionAccepted, AppSnapshot, DesktopPreferences, DesktopSnapshot, EnvironmentSnapshot,
-    ErrorSummary, LauncherMode, LauncherState, LogPage, RepoSnapshot, SettingsSnapshot,
-    UpdateResult, EVENT_STATE_CHANGED,
+    ActionAccepted, AppSnapshot, DesktopPreferences, DesktopSnapshot, DisabledAction,
+    EnvironmentSnapshot, ErrorSummary, LauncherMode, LauncherState, LogPage, OperationKind,
+    OperationStatus, RepoSnapshot, SettingsSnapshot, UpdateResult, EVENT_STATE_CHANGED,
 };
 use crate::log_hub::LogHub;
+use crate::ops::{CancellationToken, InstallationSnapshot, OperationCoordinator, OperationError};
+use crate::perf::BootTimings;
 use crate::preferences;
 use crate::services::repo::RepoService;
 use crate::services::runtime::{self, Tools};
 use crate::services::supervisor::Supervisor;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
@@ -20,7 +25,13 @@ pub struct AppState {
     pub log_hub: Arc<LogHub>,
     pub supervisor: Arc<Supervisor>,
     pub tools: Mutex<Tools>,
-    /// 流程纪元:stop/cancel 递增;旧流程检测到变化即放弃。
+    /// 统一操作协调器(operationId / journal / 取消令牌)。
+    pub ops: OperationCoordinator,
+    /// 启动/运行性能测量点。
+    pub timings: Arc<BootTimings>,
+    /// 待执行的克隆请求(Clone 弹窗提交;流程层取出执行)。
+    pub pending_clone: Mutex<Option<crate::clone::CloneRequest>>,
+    /// 流程纪元:stop/cancel 递增;旧流程检测到变化即放弃(与取消令牌双保险)。
     pub epoch: AtomicU64,
     /// 是否有流程在执行(串行化破坏性动作)。
     pub flow_active: AtomicBool,
@@ -50,12 +61,21 @@ fn apply_snapshot_update(
 }
 
 impl AppState {
-    pub fn new(log_hub: Arc<LogHub>, supervisor: Arc<Supervisor>, tools: Tools) -> Self {
+    pub fn new(
+        log_hub: Arc<LogHub>,
+        supervisor: Arc<Supervisor>,
+        tools: Tools,
+        ops: OperationCoordinator,
+        timings: Arc<BootTimings>,
+    ) -> Self {
         let prefs = preferences::load_and_migrate();
         Self {
             log_hub,
             supervisor,
             tools: Mutex::new(tools),
+            ops,
+            timings,
+            pending_clone: Mutex::new(None),
             epoch: AtomicU64::new(1),
             flow_active: AtomicBool::new(false),
             snapshot: Mutex::new(AppSnapshot::mock_idle()),
@@ -67,11 +87,122 @@ impl AppState {
 
     // ── 快照 ─────────────────────────────────────────────
 
+    /// 把 operation / disabled_actions / busy 注入快照(单一事实来源)。
+    fn finalize(&self, mut s: AppSnapshot) -> AppSnapshot {
+        s.operation = self.ops.current();
+        s.disabled_actions = self.disabled_actions(&s);
+        s.busy = self.ops.is_active()
+            || matches!(
+                s.state,
+                LauncherState::Syncing
+                    | LauncherState::Installing
+                    | LauncherState::Building
+                    | LauncherState::Starting
+                    | LauncherState::Stopping
+            );
+        s
+    }
+
+    /// 动作矩阵:给定当前快照,返回被禁用动作及其原因。
+    pub fn disabled_actions(&self, s: &AppSnapshot) -> Vec<DisabledAction> {
+        const ACTIONS: [&str; 12] = [
+            "install-node",
+            "install-git",
+            "install-pnpm",
+            "install-toolchain",
+            "clone-repo",
+            "full-setup",
+            "start",
+            "dev",
+            "update",
+            "rebuild",
+            "apply-update",
+            "save-settings",
+        ];
+        let mut out = Vec::new();
+        for a in ACTIONS {
+            if let Err(reason) = self.can_run(a, s) {
+                out.push(DisabledAction {
+                    action: a.to_string(),
+                    reason,
+                });
+            }
+        }
+        out
+    }
+
+    /// 动作矩阵判定:Err(原因) 表示该动作当前被禁用。
+    pub fn can_run(&self, action: &str, s: &AppSnapshot) -> Result<(), String> {
+        let op = s.operation.as_ref();
+        let active = op.is_some();
+        let transitioning = matches!(s.state, LauncherState::Starting | LauncherState::Stopping);
+        match action {
+            // 安全类:始终允许(日志/取消/停止/查看)
+            "clear" | "detach" | "check-update" | "stop" | "cancel" => Ok(()),
+            "start" | "dev" => {
+                if active {
+                    Err(format!(
+                        "正在执行「{}」,完成后才能启动",
+                        op.unwrap().kind.label()
+                    ))
+                } else if transitioning {
+                    Err("服务正在启动/停止中".into())
+                } else {
+                    Ok(())
+                }
+            }
+            // 工具链安装:不与任何 exclusive-write 并发;服务启停期间不允许
+            "install-node" | "install-git" | "install-pnpm" | "install-toolchain" => {
+                if active {
+                    Err(format!("正在执行「{}」", op.unwrap().kind.label()))
+                } else if transitioning {
+                    Err("服务正在启动/停止中".into())
+                } else {
+                    Ok(())
+                }
+            }
+            // 仓库/构建类:exclusive-write;运行中必须先停止
+            "clone-repo" | "full-setup" | "update" | "rebuild" => {
+                if active {
+                    Err(format!("正在执行「{}」", op.unwrap().kind.label()))
+                } else if transitioning {
+                    Err("服务正在启动/停止中".into())
+                } else if s.state == LauncherState::Running {
+                    Err("请先停止 dsh 服务,再执行仓库/构建操作".into())
+                } else {
+                    Ok(())
+                }
+            }
+            "apply-update" => {
+                if active {
+                    Err(format!("正在执行「{}」", op.unwrap().kind.label()))
+                } else if !s.update.available {
+                    Err("没有可用更新".into())
+                } else {
+                    Ok(())
+                }
+            }
+            // 影响 repo/runtime/network 的设置:任务期间禁用
+            "save-settings" => {
+                if active {
+                    Err(format!(
+                        "任务「{}」执行期间不能修改仓库/端口等设置",
+                        op.unwrap().kind.label()
+                    ))
+                } else {
+                    Ok(())
+                }
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// 用部分字段更新快照并广播事件。
     pub fn set_snapshot(&self, app: &AppHandle, partial: impl FnOnce(&mut AppSnapshot)) {
         // 先完成状态更新并释放锁。托盘刷新会再次读取 snapshot，若持锁调用会自锁，
         // 表现为 UI 已收到 starting 事件、随后启动流程和设置 IPC 永久卡住。
         let snap = apply_snapshot_update(&self.snapshot, partial);
+        let snap = self.finalize(snap);
         let _ = app.emit(EVENT_STATE_CHANGED, &snap);
         crate::tray::refresh(app);
     }
@@ -84,7 +215,7 @@ impl AppState {
                 detail: err,
             });
         }
-        snap
+        self.finalize(snap)
     }
 
     /// 刷新仓库状态快照(动作前后调用)。
@@ -115,6 +246,8 @@ impl AppState {
 
     pub fn refresh_repo_emit(&self, app: &AppHandle) {
         self.refresh_repo();
+        self.timings.mark("repo_check_done");
+        self.emit_perf(app);
         let snap = self.snapshot.lock().unwrap().clone();
         let _ = app.emit(EVENT_STATE_CHANGED, &snap);
     }
@@ -158,6 +291,8 @@ impl AppState {
     }
 
     pub fn save_settings(&self, patch: &serde_json::Value) -> Result<SettingsSnapshot, String> {
+        let snap = self.snapshot();
+        self.can_run("save-settings", &snap)?;
         config::apply_patch(patch)
     }
 
@@ -169,17 +304,17 @@ impl AppState {
         let mut warnings = Vec::new();
         if tools.pnpm.is_none() {
             warnings.push(
-                "未找到 pnpm,请先安装(brew install pnpm,或 corepack enable);「启动/开发模式/更新并构建」需要它"
+                "未找到 pnpm,请先安装(或「安装托管工具链」);「启动/开发模式/更新并构建」需要它"
                     .into(),
             );
         }
         if tools.git.is_none() {
-            warnings.push("未找到 git,「更新并构建」不可用".into());
+            warnings.push("未找到 git,「克隆仓库/更新并构建」不可用;可安装托管 Git".into());
         }
         let dsh_node = runtime::resolve_dsh_node();
         if dsh_node.is_none() {
             warnings.push(
-                "未找到 dsh 要求版本范围(^22.19 || >=24)的 Node;开发模式与构建将不可用,可在设置中安装托管 Node"
+                "未找到 dsh 要求版本范围(^22.19 || >=24)的 Node;开发模式与构建将不可用,可安装托管 Node"
                     .to_string(),
             );
         }
@@ -207,17 +342,31 @@ impl AppState {
         }
     }
 
+    // ── 性能测量 ─────────────────────────────────────────
+
+    pub fn emit_perf(&self, app: &AppHandle) {
+        use tauri::Emitter as _;
+        let _ = app.emit(crate::perf::EVENT_PERF_METRICS, self.timings.snapshot());
+    }
+
     // ── 动作协调 ─────────────────────────────────────────
 
-    /// 动作入口:长流程在后台线程执行,立即返回接受。
+    /// 动作入口:长流程在后台线程执行,立即返回「已接受」。
+    /// 成功与否只由快照中的 operation.status 终态决定。
     pub fn run_action(self: &Arc<Self>, app: &AppHandle, action: &str) -> ActionAccepted {
         let allowed = [
             "start",
             "dev",
             "update",
-            "stop",
             "rebuild",
+            "stop",
+            "cancel",
             "install-node",
+            "install-git",
+            "install-pnpm",
+            "install-toolchain",
+            "clone-repo",
+            "full-setup",
             "clear",
             "check-update",
             "apply-update",
@@ -241,11 +390,25 @@ impl AppState {
             };
         }
         if action == "stop" {
-            // stop 不需要流程锁:epoch++ 让旧流程放弃 + 停止全部进程树
-            self.epoch.fetch_add(1, Ordering::SeqCst);
-            let app = app.clone();
-            let me = self.clone();
-            std::thread::spawn(move || me.stop_flow(&app));
+            // stop 不需要流程锁:取消令牌 + epoch++ + 停止全部进程树
+            self.cancel_flow(app);
+            return ActionAccepted {
+                ok: true,
+                reason: None,
+                aborted: None,
+                already: None,
+            };
+        }
+        if action == "cancel" {
+            if !self.ops.is_active() {
+                return ActionAccepted {
+                    ok: false,
+                    reason: Some("没有进行中的任务".into()),
+                    aborted: Some(true),
+                    already: None,
+                };
+            }
+            self.cancel_flow(app);
             return ActionAccepted {
                 ok: true,
                 reason: None,
@@ -265,36 +428,100 @@ impl AppState {
         if action == "check-update" || action == "apply-update" {
             return ActionAccepted {
                 ok: false,
-                reason: Some("自动更新由桌面版内置 updater 提供".into()),
+                reason: Some("自动更新由设置页的异步命令提供".into()),
                 aborted: None,
                 already: None,
             };
         }
 
-        // 破坏性/长流程:串行化
-        if self.flow_active.swap(true, Ordering::SeqCst) {
+        let kind: OperationKind = match action {
+            "start" => OperationKind::StartWeb,
+            "dev" => OperationKind::StartDev,
+            "update" => OperationKind::UpdateRebuild,
+            "rebuild" => OperationKind::RebuildRestart,
+            "install-node" => OperationKind::InstallNode,
+            "install-git" => OperationKind::InstallGit,
+            "install-pnpm" => OperationKind::InstallPnpm,
+            "install-toolchain" => OperationKind::InstallToolchain,
+            "clone-repo" => OperationKind::CloneRepo,
+            "full-setup" => OperationKind::FullSetup,
+            _ => {
+                return ActionAccepted {
+                    ok: false,
+                    reason: Some(format!("动作 {action} 未绑定流程")),
+                    aborted: None,
+                    already: None,
+                };
+            }
+        };
+
+        // 动作矩阵:被禁用时给出具体原因
+        let snap = self.snapshot();
+        if let Err(reason) = self.can_run(action, &snap) {
             return ActionAccepted {
                 ok: false,
-                reason: Some("busy".into()),
+                reason: Some(reason),
                 aborted: None,
                 already: None,
             };
         }
-        let my_epoch = self.epoch.load(Ordering::SeqCst);
+
+        // 开始操作(exclusive-write 与 start/dev 互斥由 can_run + coordinator 双保险)
+        let (id, token) = match self.ops.begin(kind, true, "准备中…") {
+            Ok(x) => x,
+            Err(e) => {
+                return ActionAccepted {
+                    ok: false,
+                    reason: Some(e),
+                    aborted: None,
+                    already: None,
+                };
+            }
+        };
+        if self.flow_active.swap(true, Ordering::SeqCst) {
+            self.ops
+                .finish(id, OperationStatus::Failed, Some("已有流程在执行".into()));
+            return ActionAccepted {
+                ok: false,
+                reason: Some("已有流程在执行".into()),
+                aborted: None,
+                already: None,
+            };
+        }
+
+        // 立即广播「已接受」快照(operation 可见)
+        self.set_snapshot(app, |_| {});
+
         let app = app.clone();
         let me = self.clone();
         let action = action.to_string();
         std::thread::spawn(move || {
-            let result = match action.as_str() {
-                "start" => me.start_flow(&app, "normal"),
-                "dev" => me.start_flow(&app, "dev"),
-                "update" => me.update_flow(&app),
-                "rebuild" => me.rebuild_flow(&app),
-                "install-node" => me.install_node_flow(&app),
-                _ => Ok(()),
+            let result: Result<(), OperationError> = match action.as_str() {
+                "start" => me.start_flow(&app, "normal", &token),
+                "dev" => me.start_flow(&app, "dev", &token),
+                "update" => me.update_flow(&app, &token),
+                "rebuild" => me.rebuild_flow(&app, &token),
+                "install-node" => me.install_node_flow(&app, &token),
+                "install-git" => me.install_git_flow(&app, &token),
+                "install-pnpm" => me.install_pnpm_flow(&app, &token),
+                "install-toolchain" => me.install_toolchain_flow(&app, &token),
+                "clone-repo" => me.clone_repo_flow(&app, &token),
+                "full-setup" => me.full_setup_flow(&app, &token),
+                _ => Err(OperationError::Failed("未知流程".into())),
             };
-            let _ = (result, my_epoch);
+            match result {
+                Ok(()) => me.ops.finish(id, OperationStatus::Success, None),
+                Err(OperationError::Cancelled) => {
+                    me.ops
+                        .finish(id, OperationStatus::Cancelled, Some("已取消".into()))
+                }
+                Err(OperationError::Failed(e)) => {
+                    me.ops.finish(id, OperationStatus::Failed, Some(e))
+                }
+            }
             me.flow_active.store(false, Ordering::SeqCst);
+            // 广播终态快照(operation 已清空或为终态)
+            me.set_snapshot(&app, |_| {});
         });
         ActionAccepted {
             ok: true,
@@ -304,10 +531,60 @@ impl AppState {
         }
     }
 
+    /// 取消当前流程:令牌置位 + epoch++ + 停止全部进程树。
+    /// 正在执行的流程线程检测到令牌后自行 finish(Cancelled)。
+    fn cancel_flow(self: &Arc<Self>, app: &AppHandle) {
+        self.epoch.fetch_add(1, Ordering::SeqCst);
+        self.ops.request_cancel();
+        self.log_hub.append(
+            "launcher",
+            crate::contract::LogLevel::Info,
+            "收到停止/取消请求:置位取消令牌并停止全部进程树",
+        );
+        self.set_snapshot(app, |s| {
+            s.state = LauncherState::Stopping;
+            s.phase = "停止中…".into();
+            s.error = None;
+        });
+        let app = app.clone();
+        let me = self.clone();
+        std::thread::spawn(move || {
+            me.supervisor.stop_all();
+            me.set_snapshot(&app, |s| {
+                s.state = LauncherState::Idle;
+                s.mode = LauncherMode::None;
+                s.phase = String::new();
+                s.web_pid = None;
+                s.dev_pid = None;
+                s.url = None;
+                s.hmr_active = false;
+                s.started_at = None;
+                s.ready_at = None;
+            });
+            me.log_hub.append(
+                "launcher",
+                crate::contract::LogLevel::Ok,
+                "已停止全部进程(dsh web / dev:web)",
+            );
+        });
+    }
+
     // ── 流程实现 ─────────────────────────────────────────
 
-    fn epoch_ok(&self, my_epoch: u64) -> bool {
-        self.epoch.load(Ordering::SeqCst) == my_epoch
+    fn fail(&self, app: &AppHandle, summary: &str, detail: &str) {
+        self.log_hub.append(
+            "launcher",
+            crate::contract::LogLevel::Err,
+            &format!("失败:{summary} — {detail}"),
+        );
+        self.set_snapshot(app, |s| {
+            s.state = LauncherState::Failed;
+            s.error = Some(ErrorSummary {
+                summary: summary.into(),
+                detail: detail.into(),
+            });
+            s.phase = String::new();
+        });
     }
 
     /// 打开浏览器。
@@ -344,40 +621,27 @@ impl AppState {
         }
     }
 
-    fn fail(&self, app: &AppHandle, summary: &str, detail: &str) {
-        self.log_hub.append(
-            "launcher",
-            crate::contract::LogLevel::Err,
-            &format!("失败:{summary} — {detail}"),
-        );
-        self.set_snapshot(app, |s| {
-            s.state = LauncherState::Failed;
-            s.error = Some(ErrorSummary {
-                summary: summary.into(),
-                detail: detail.into(),
-            });
-            s.busy = false;
-            s.phase = String::new();
-        });
-    }
-
-    /// 启动 dsh web(normal/dev),等待就绪/超时/早退。
+    /// 启动 dsh web(normal/dev),等待就绪/超时/早退;全程可取消。
     fn launch_web(
         self: &Arc<Self>,
         app: &AppHandle,
         mode: &str,
-        my_epoch: u64,
-    ) -> Result<(), String> {
+        token: &CancellationToken,
+    ) -> Result<(), OperationError> {
+        token.check()?;
         let settings = config::load();
         let tools = self.tools.lock().unwrap().clone();
-        let pid = self.supervisor.spawn_web(
-            &tools,
-            &settings.repo_path,
-            settings.port,
-            &settings.host,
-            &settings.dsh_home,
-            |_url| {},
-        )?;
+        let pid = self
+            .supervisor
+            .spawn_web(
+                &tools,
+                &settings.repo_path,
+                settings.port,
+                &settings.host,
+                &settings.dsh_home,
+                |_url| {},
+            )
+            .map_err(OperationError::Failed)?;
         self.set_snapshot(app, |s| {
             s.web_pid = Some(pid);
             s.started_at = Some(now_ms());
@@ -388,14 +652,13 @@ impl AppState {
             };
         });
         let ready_timeout = settings.ready_timeout_ms.max(10_000);
+        let cancel_flag = token.flag();
         match self
             .supervisor
-            .wait_ready(pid, settings.port, ready_timeout)
+            .wait_ready_cancellable(pid, settings.port, ready_timeout, cancel_flag)
         {
             Ok(url) => {
-                if !self.epoch_ok(my_epoch) {
-                    return Err("epoch-changed".into());
-                }
+                token.check()?;
                 self.set_snapshot(app, |s| {
                     s.state = LauncherState::Running;
                     s.url = Some(url.clone());
@@ -403,10 +666,11 @@ impl AppState {
                     s.started_at = Some(now_ms());
                     s.ready_at = Some(now_ms());
                     s.error = None;
-                    s.busy = false;
                     s.phase = "就绪".into();
                     s.hmr_active = false;
                 });
+                self.timings.mark("dsh_ready");
+                self.emit_perf(app);
                 self.log_hub.append(
                     "launcher",
                     crate::contract::LogLevel::Ok,
@@ -420,21 +684,24 @@ impl AppState {
                     );
                 }
                 self.supervisor.persist_running();
-                self.open_browser(&url);
                 Ok(())
             }
             Err(e) => {
-                if !self.epoch_ok(my_epoch) {
-                    return Err("epoch-changed".into());
-                }
+                token.check()?;
                 self.supervisor.stop("dsh web");
                 self.fail(app, "启动失败", &e);
-                Err(e)
+                Err(OperationError::Failed(e))
             }
         }
     }
 
-    fn start_flow(self: &Arc<Self>, app: &AppHandle, mode: &str) -> Result<(), String> {
+    fn start_flow(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        mode: &str,
+        token: &CancellationToken,
+    ) -> Result<(), OperationError> {
+        token.check()?;
         let settings = config::load();
         let usable = config::repo_usable(&settings.repo_path);
         if !usable.ok {
@@ -443,7 +710,7 @@ impl AppState {
                 &format!("仓库不可用:{}", settings.repo_path),
                 usable.reason.as_deref().unwrap_or("未知"),
             );
-            return Err("repo-unusable".into());
+            return Err(OperationError::Failed("repo-unusable".into()));
         }
         // 已在运行 → 直接召回
         {
@@ -468,7 +735,7 @@ impl AppState {
                 &format!("开发模式需要 Node {}", runtime::NODE_RANGE_MSG),
                 "当前未找到兼容 Node,tsx/tsdown 会崩溃。请在「设置 → 运行时」一键安装 Node 24 LTS",
             );
-            return Err("node-unsupported".into());
+            return Err(OperationError::Failed("node-unsupported".into()));
         }
         if config::probe_port(&settings.host, settings.port) {
             self.fail(
@@ -479,19 +746,17 @@ impl AppState {
                     self.port_diag(settings.port)
                 ),
             );
-            return Err("port-busy".into());
+            return Err(OperationError::Failed("port-busy".into()));
         }
         if self.tools.lock().unwrap().pnpm.is_none() {
             self.fail(
                 app,
                 "未找到 pnpm",
-                "请先安装 pnpm(brew install pnpm 或 corepack enable),然后重试",
+                "请先安装 pnpm(brew install pnpm 或「安装托管工具链」),然后重试",
             );
-            return Err("no-pnpm".into());
+            return Err(OperationError::Failed("no-pnpm".into()));
         }
-        let my_epoch = self.epoch.load(Ordering::SeqCst);
         self.set_snapshot(app, |s| {
-            s.busy = true;
             s.error = None;
             s.mode = if mode == "dev" {
                 LauncherMode::Dev
@@ -525,21 +790,23 @@ impl AppState {
                     );
                 }
                 Err(e) => {
-                    if self.epoch_ok(my_epoch) {
-                        self.fail(app, "开发模式启动失败", &e);
-                    }
-                    return Err(e);
+                    token.check()?;
+                    self.fail(app, "开发模式启动失败", &e);
+                    return Err(OperationError::Failed(e));
                 }
             }
         }
-        let r = self.launch_web(app, mode, my_epoch);
-        if !self.epoch_ok(my_epoch) {
-            return Err("epoch-changed".into());
-        }
+        let r = self.launch_web(app, mode, token);
+        token.check()?;
         r
     }
 
-    fn update_flow(self: &Arc<Self>, app: &AppHandle) -> Result<(), String> {
+    fn update_flow(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        token: &CancellationToken,
+    ) -> Result<(), OperationError> {
+        token.check()?;
         let settings = config::load();
         let usable = config::repo_usable(&settings.repo_path);
         if !usable.ok {
@@ -548,7 +815,7 @@ impl AppState {
                 &format!("仓库不可用:{}", settings.repo_path),
                 usable.reason.as_deref().unwrap_or("未知"),
             );
-            return Err("repo-unusable".into());
+            return Err(OperationError::Failed("repo-unusable".into()));
         }
         if runtime::resolve_dsh_node().is_none() {
             self.fail(
@@ -556,21 +823,28 @@ impl AppState {
                 &format!("更新并构建需要 Node {}", runtime::NODE_RANGE_MSG),
                 "未找到兼容 Node,tsx/tsdown 会崩溃。请在「设置 → 运行时」一键安装 Node 24 LTS",
             );
-            return Err("node-unsupported".into());
+            return Err(OperationError::Failed("node-unsupported".into()));
         }
         if self.tools.lock().unwrap().git.is_none() {
-            self.fail(app, "未找到 git", "「更新并构建」需要 git,请先安装");
-            return Err("no-git".into());
+            self.fail(
+                app,
+                "未找到 git",
+                "「更新并构建」需要 git,请先安装或使用「安装托管工具链」",
+            );
+            return Err(OperationError::Failed("no-git".into()));
         }
-        let my_epoch = self.epoch.load(Ordering::SeqCst);
         let mode = self.snapshot.lock().unwrap().mode.clone();
         self.set_snapshot(app, |s| {
-            s.busy = true;
             s.error = None;
             s.mode = mode.clone();
             s.state = LauncherState::Syncing;
             s.phase = "同步远端…".into();
         });
+        self.ops.set_stage(
+            self.ops.current().map(|o| o.operation_id).unwrap_or(0),
+            "同步远端…",
+            None,
+        );
         self.log_hub.append(
             "launcher",
             crate::contract::LogLevel::Info,
@@ -582,9 +856,7 @@ impl AppState {
         // 1. 同步
         let before = repo.head_short(&settings.repo_path);
         let sync = repo.sync(&settings.repo_path);
-        if !self.epoch_ok(my_epoch) {
-            return Err("epoch-changed".into());
-        }
+        token.check()?;
         if !sync.ok {
             let (summary, detail) = match sync.stage.as_str() {
                 "conflict" => (
@@ -609,7 +881,7 @@ impl AppState {
                 ),
             };
             self.fail(app, &summary, &detail);
-            return Err("sync-failed".into());
+            return Err(OperationError::Failed("sync-failed".into()));
         }
         self.set_snapshot(app, |s| {
             s.repo.sync_at = Some(now_ms());
@@ -629,14 +901,13 @@ impl AppState {
             &|p| {
                 self.set_snapshot(app, |s| s.phase = p.to_string());
             },
+            token,
         )?;
         let _ = needed;
-        if !self.epoch_ok(my_epoch) {
-            return Err("epoch-changed".into());
-        }
+        token.check()?;
         if !ok {
             self.fail(app, "依赖安装失败", "查看日志尾部(pnpm install 退出码非 0)");
-            return Err("install-failed".into());
+            return Err(OperationError::Failed("install-failed".into()));
         }
 
         // 3. 构建
@@ -652,17 +923,16 @@ impl AppState {
             &|p| {
                 self.set_snapshot(app, |s| s.phase = p.to_string());
             },
+            token,
         )?;
-        if !self.epoch_ok(my_epoch) {
-            return Err("epoch-changed".into());
-        }
+        token.check()?;
         if !ok {
             self.fail(
                 app,
                 "构建失败",
                 "退出码非 0;查看日志尾部定位到阶段。修复后重试「更新并构建」",
             );
-            return Err("build-failed".into());
+            return Err(OperationError::Failed("build-failed".into()));
         }
 
         // 4. 重启服务(同模式)
@@ -692,15 +962,18 @@ impl AppState {
             } else {
                 "normal"
             },
-            my_epoch,
+            token,
         );
-        if !self.epoch_ok(my_epoch) {
-            return Err("epoch-changed".into());
-        }
+        token.check()?;
         r
     }
 
-    fn rebuild_flow(self: &Arc<Self>, app: &AppHandle) -> Result<(), String> {
+    fn rebuild_flow(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        token: &CancellationToken,
+    ) -> Result<(), OperationError> {
+        token.check()?;
         let settings = config::load();
         let usable = config::repo_usable(&settings.repo_path);
         if !usable.ok {
@@ -709,7 +982,7 @@ impl AppState {
                 &format!("仓库不可用:{}", settings.repo_path),
                 usable.reason.as_deref().unwrap_or("未知"),
             );
-            return Err("repo-unusable".into());
+            return Err(OperationError::Failed("repo-unusable".into()));
         }
         if runtime::resolve_dsh_node().is_none() {
             self.fail(
@@ -717,16 +990,14 @@ impl AppState {
                 &format!("重建并重启需要 Node {}", runtime::NODE_RANGE_MSG),
                 "未找到兼容 Node。请在「设置 → 运行时」一键安装 Node 24 LTS",
             );
-            return Err("node-unsupported".into());
+            return Err(OperationError::Failed("node-unsupported".into()));
         }
         if self.tools.lock().unwrap().pnpm.is_none() {
             self.fail(app, "未找到 pnpm", "请先安装 pnpm,然后重试");
-            return Err("no-pnpm".into());
+            return Err(OperationError::Failed("no-pnpm".into()));
         }
-        let my_epoch = self.epoch.load(Ordering::SeqCst);
         let mode = self.snapshot.lock().unwrap().mode.clone();
         self.set_snapshot(app, |s| {
-            s.busy = true;
             s.error = None;
             s.mode = mode.clone();
             s.state = LauncherState::Stopping;
@@ -738,9 +1009,7 @@ impl AppState {
             "重建并重启:停止 → 构建 → 启动",
         );
         self.supervisor.stop_all();
-        if !self.epoch_ok(my_epoch) {
-            return Err("epoch-changed".into());
-        }
+        token.check()?;
         self.set_snapshot(app, |s| {
             s.state = LauncherState::Building;
             s.phase = "构建中…".into();
@@ -757,17 +1026,16 @@ impl AppState {
             &|p| {
                 self.set_snapshot(app, |s| s.phase = p.to_string());
             },
+            token,
         )?;
-        if !self.epoch_ok(my_epoch) {
-            return Err("epoch-changed".into());
-        }
+        token.check()?;
         if !ok {
             self.fail(
                 app,
                 "构建失败",
                 "构建失败,服务已停止。修复后重试「重建并重启」",
             );
-            return Err("build-failed".into());
+            return Err(OperationError::Failed("build-failed".into()));
         }
         self.refresh_repo();
         self.set_snapshot(app, |s| {
@@ -781,43 +1049,20 @@ impl AppState {
             } else {
                 "normal"
             },
-            my_epoch,
+            token,
         );
-        if !self.epoch_ok(my_epoch) {
-            return Err("epoch-changed".into());
-        }
+        token.check()?;
         r
     }
 
-    /// 停止流程:epoch++ 已在入口完成;这里停全部进程树并复位状态。
-    fn stop_flow(self: &Arc<Self>, app: &AppHandle) {
-        self.set_snapshot(app, |s| {
-            s.state = LauncherState::Stopping;
-            s.busy = true;
-            s.phase = "停止中…".into();
-            s.error = None;
-        });
-        self.supervisor.stop_all();
-        self.set_snapshot(app, |s| {
-            s.state = LauncherState::Idle;
-            s.busy = false;
-            s.mode = LauncherMode::None;
-            s.phase = String::new();
-            s.web_pid = None;
-            s.dev_pid = None;
-            s.url = None;
-            s.hmr_active = false;
-            s.started_at = None;
-            s.ready_at = None;
-        });
-        self.log_hub.append(
-            "launcher",
-            crate::contract::LogLevel::Ok,
-            "已停止全部进程(dsh web / dev:web)",
-        );
-    }
+    // ── 托管工具链安装流程(M1:签名 catalog + 国内下载 + 校验 + 安全解压) ──
 
-    fn install_node_flow(self: &Arc<Self>, app: &AppHandle) -> Result<(), String> {
+    fn install_node_flow(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        token: &CancellationToken,
+    ) -> Result<(), OperationError> {
+        token.check()?;
         if runtime::resolve_dsh_node().is_some() {
             self.log_hub.append(
                 "launcher",
@@ -826,37 +1071,209 @@ impl AppState {
             );
             return Ok(());
         }
-        let my_epoch = self.epoch.load(Ordering::SeqCst);
         self.set_snapshot(app, |s| {
-            s.busy = true;
             s.error = None;
             s.state = LauncherState::Starting;
             s.phase = "安装 Node 24 LTS…".into();
         });
-        let result = runtime::install_node(&self.log_hub, &|p| {
+        let result = runtime::install_node(&self.log_hub, token, &|p| {
             self.set_snapshot(app, |s| s.phase = p.to_string());
         });
-        if !self.epoch_ok(my_epoch) {
-            return Err("epoch-changed".into());
-        }
+        token.check()?;
         match result {
             Ok((path, version)) => {
+                self.refresh_tools();
                 self.log_hub.append(
                     "launcher",
                     crate::contract::LogLevel::Ok,
                     &format!("Node {version} 安装完成并已自动选用 → {}", path.display()),
                 );
                 self.set_snapshot(app, |s| {
-                    s.busy = false;
                     s.state = LauncherState::Idle;
                     s.phase = String::new();
                 });
                 Ok(())
             }
-            Err(e) => {
+            Err(OperationError::Cancelled) => Err(OperationError::Cancelled),
+            Err(OperationError::Failed(e)) => {
                 self.fail(app, "Node 安装失败", &e);
-                Err(e)
+                Err(OperationError::Failed(e))
             }
+        }
+    }
+
+    fn install_git_flow(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        token: &CancellationToken,
+    ) -> Result<(), OperationError> {
+        self.run_toolchain_install(
+            app,
+            token,
+            crate::toolchain::Tool::Git,
+            "安装托管 Git(MinGit)…",
+        )
+    }
+
+    fn install_pnpm_flow(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        token: &CancellationToken,
+    ) -> Result<(), OperationError> {
+        self.run_toolchain_install(app, token, crate::toolchain::Tool::Pnpm, "安装托管 pnpm…")
+    }
+
+    fn install_toolchain_flow(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        token: &CancellationToken,
+    ) -> Result<(), OperationError> {
+        self.run_toolchain_install(
+            app,
+            token,
+            crate::toolchain::Tool::All,
+            "安装托管工具链(Node + Git + pnpm)…",
+        )
+    }
+
+    fn run_toolchain_install(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        token: &CancellationToken,
+        tool: crate::toolchain::Tool,
+        phase: &str,
+    ) -> Result<(), OperationError> {
+        token.check()?;
+        self.set_snapshot(app, |s| {
+            s.error = None;
+            s.state = LauncherState::Starting;
+            s.phase = phase.to_string();
+        });
+        let result = crate::toolchain::ensure_tool(
+            &self.log_hub,
+            tool,
+            token,
+            &|p| {
+                self.set_snapshot(app, |s| s.phase = p.to_string());
+            },
+            &self.tools.lock().unwrap().clone(),
+        );
+        token.check()?;
+        match result {
+            Ok(report) => {
+                self.refresh_tools();
+                for line in report.messages {
+                    self.log_hub
+                        .append("launcher", crate::contract::LogLevel::Ok, &line);
+                }
+                self.set_snapshot(app, |s| {
+                    s.state = LauncherState::Idle;
+                    s.phase = String::new();
+                });
+                Ok(())
+            }
+            Err(OperationError::Cancelled) => Err(OperationError::Cancelled),
+            Err(OperationError::Failed(e)) => {
+                self.fail(app, "工具链安装失败", &e);
+                Err(OperationError::Failed(e))
+            }
+        }
+    }
+
+    fn clone_repo_flow(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        token: &CancellationToken,
+    ) -> Result<(), OperationError> {
+        self.run_full_setup(app, token, false)
+    }
+
+    fn full_setup_flow(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        token: &CancellationToken,
+    ) -> Result<(), OperationError> {
+        self.run_full_setup(app, token, true)
+    }
+
+    /// Clone(或一键全套)流程:远端验证 → staging clone → 校验 → 安装/构建/post-check
+    /// → 原子提交最终目录 → 保存配置。目标非空绝不覆盖;失败只清理本次 staging。
+    /// full 为 true 时在 staging 中完成 install + build + post-check 再提交。
+    fn run_full_setup(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        token: &CancellationToken,
+        full: bool,
+    ) -> Result<(), OperationError> {
+        token.check()?;
+        let Some(request) = self.pending_clone.lock().unwrap().take() else {
+            self.fail(
+                app,
+                "没有待执行的克隆请求",
+                "请先打开克隆弹窗填写 URL 与目标目录",
+            );
+            return Err(OperationError::Failed("no-clone-request".into()));
+        };
+        let done = crate::clone::run_clone_full(
+            &self.log_hub,
+            &request,
+            full,
+            token,
+            &|stage, progress| {
+                self.ops.set_stage(
+                    self.ops.current().map(|o| o.operation_id).unwrap_or(0),
+                    stage,
+                    progress,
+                );
+                self.set_snapshot(app, |s| s.phase = stage.to_string());
+            },
+            &self.tools.lock().unwrap().clone(),
+        );
+        token.check()?;
+        match done {
+            Ok(result) => {
+                // 提交最终目录成功后,保存 repoPath 与 last-good URL
+                let mut settings = config::load();
+                settings.repo_path = result.final_dir.clone();
+                config::save(&settings).map_err(OperationError::Failed)?;
+                crate::clone::remember_good_url(&request.url);
+                self.refresh_tools();
+                self.log_hub.append(
+                    "launcher",
+                    crate::contract::LogLevel::Ok,
+                    &format!(
+                        "仓库就绪 → {} (分支 {},HEAD {})",
+                        result.final_dir, result.branch, result.head
+                    ),
+                );
+                self.set_snapshot(app, |s| {
+                    s.state = LauncherState::Idle;
+                    s.phase = String::new();
+                    s.error = None;
+                });
+                Ok(())
+            }
+            Err(OperationError::Cancelled) => Err(OperationError::Cancelled),
+            Err(OperationError::Failed(e)) => {
+                self.fail(app, "克隆/安装失败", &e);
+                Err(OperationError::Failed(e))
+            }
+        }
+    }
+
+    /// 安装后刷新当前进程采用的托管工具(修复“安装完成但需重启才生效”问题)。
+    fn refresh_tools(&self) {
+        let mut tools = self.tools.lock().unwrap();
+        let node_dir =
+            runtime::resolve_dsh_node().and_then(|(bin, _)| bin.parent().map(PathBuf::from));
+        tools.dsh_node_dir = node_dir;
+        let git = crate::toolchain::resolve_git(&tools.clone());
+        if let Some(g) = git {
+            tools.git = Some(g);
+        }
+        let pnpm = crate::toolchain::resolve_pnpm(&tools.clone());
+        if let Some(p) = pnpm {
+            tools.pnpm = Some(p);
         }
     }
 
@@ -941,7 +1358,7 @@ impl AppState {
         }
     }
 
-    /// 下载并安装更新,完成后重启应用。
+    /// 下载并安装更新(独占 SelfUpdate 操作),完成后重启应用。
     pub async fn apply_update(&self, app: &AppHandle) -> ActionAccepted {
         use tauri_plugin_updater::UpdaterExt;
         let updater = match app.updater() {
@@ -974,6 +1391,18 @@ impl AppState {
                 };
             }
         };
+        let (id, _token) = match self.ops.begin(OperationKind::SelfUpdate, true, "下载更新…")
+        {
+            Ok(x) => x,
+            Err(e) => {
+                return ActionAccepted {
+                    ok: false,
+                    reason: Some(e),
+                    aborted: None,
+                    already: None,
+                };
+            }
+        };
         self.set_update(app, |u| {
             u.installing = true;
             u.error = None;
@@ -983,6 +1412,7 @@ impl AppState {
             .await
         {
             Ok(_) => {
+                self.ops.finish(id, OperationStatus::Success, None);
                 self.log_hub.append(
                     "launcher",
                     crate::contract::LogLevel::Ok,
@@ -992,6 +1422,8 @@ impl AppState {
                 app.restart()
             }
             Err(e) => {
+                self.ops
+                    .finish(id, OperationStatus::Failed, Some(e.to_string()));
                 self.set_update(app, |u| {
                     u.installing = false;
                     u.error = Some(e.to_string());
@@ -1031,6 +1463,11 @@ impl AppState {
     pub fn on_app_exit(&self) {
         self.supervisor.detach();
     }
+
+    /// 安装快照(供设置页显示托管工具链状态)。
+    pub fn installation(&self) -> InstallationSnapshot {
+        crate::ops::load_installation()
+    }
 }
 
 #[cfg(test)]
@@ -1048,5 +1485,88 @@ mod tests {
         assert_eq!(updated.state, LauncherState::Starting);
         assert_eq!(updated.phase, "启动中");
         assert!(snapshot.try_lock().is_ok(), "快照更新后不应继续持锁");
+    }
+
+    fn test_state() -> AppState {
+        let hub = Arc::new(LogHub::new(
+            std::env::temp_dir().join(format!("dsh-state-test-{}.log", std::process::id())),
+            Arc::new(|_| {}),
+            true,
+        ));
+        let sink: Arc<crate::ops::OpSink> = Arc::new(|_| {});
+        AppState::new(
+            hub,
+            Arc::new(Supervisor::new(Arc::new(LogHub::new(
+                std::env::temp_dir().join(format!("dsh-state-sup-{}.log", std::process::id())),
+                Arc::new(|_| {}),
+                true,
+            )))),
+            Tools {
+                pnpm: None,
+                git: None,
+                dsh_node_dir: None,
+            },
+            OperationCoordinator::new(
+                Arc::new(LogHub::new(
+                    std::env::temp_dir().join(format!("dsh-state-ops-{}.log", std::process::id())),
+                    Arc::new(|_| {}),
+                    true,
+                )),
+                sink,
+            ),
+            Arc::new(BootTimings::new(std::time::Instant::now())),
+        )
+    }
+
+    #[test]
+    fn action_matrix_disables_conflicting_actions() {
+        let st = test_state();
+        // 空闲:仓库/构建/工具链动作都允许
+        let idle = AppSnapshot::mock_idle();
+        assert!(st.can_run("update", &idle).is_ok());
+        assert!(st.can_run("start", &idle).is_ok());
+        assert!(st.can_run("install-toolchain", &idle).is_ok());
+
+        // 运行中:仓库/构建动作被禁用并给出原因
+        let mut running = AppSnapshot::mock_idle();
+        running.state = LauncherState::Running;
+        let err = st.can_run("update", &running).unwrap_err();
+        assert!(err.contains("停止"), "{err}");
+        assert!(
+            st.can_run("start", &running).is_ok(),
+            "运行中 start 是召回,允许"
+        );
+
+        // 有 exclusive-write 操作:start/dev/仓库动作全部禁用,stop/cancel 允许
+        let mut busy = AppSnapshot::mock_idle();
+        busy.operation = Some(crate::contract::OperationSnapshot {
+            operation_id: 1,
+            kind: OperationKind::CloneRepo,
+            status: OperationStatus::Running,
+            stage: "克隆中…".into(),
+            progress: None,
+            error: None,
+            started_at: None,
+            finished_at: None,
+            cancellable: true,
+        });
+        let err = st.can_run("start", &busy).unwrap_err();
+        assert!(err.contains("克隆仓库"), "{err}");
+        assert!(st.can_run("stop", &busy).is_ok());
+        assert!(st.can_run("cancel", &busy).is_ok());
+        assert!(st.can_run("clear", &busy).is_ok());
+        let err2 = st.can_run("clone-repo", &busy).unwrap_err();
+        assert!(err2.contains("克隆仓库"), "{err2}");
+
+        // save-settings 在任务期间禁用
+        assert!(st.can_run("save-settings", &busy).is_err());
+    }
+
+    #[test]
+    fn finalize_injects_operation_and_disabled() {
+        let st = test_state();
+        let s = st.snapshot();
+        assert!(s.operation.is_none());
+        assert!(s.disabled_actions.is_empty() || !s.busy);
     }
 }

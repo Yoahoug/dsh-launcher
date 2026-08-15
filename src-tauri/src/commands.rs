@@ -162,3 +162,80 @@ pub fn open_repo_directory(_app: AppHandle, state: State<'_, Arc<AppState>>) -> 
 pub fn open_log_directory(_app: AppHandle, state: State<'_, Arc<AppState>>) -> Result<(), String> {
     state.open_log_directory()
 }
+
+// ── M0/M1:性能测量、Clone 弹窗、托管工具链快照 ──────────
+
+/// renderer 上报测量点(如 react_interactive),记录后广播完整指标。
+#[tauri::command]
+pub fn perf_mark(name: String, app: AppHandle, state: State<'_, Arc<AppState>>) {
+    state.timings.mark(&name);
+    state.emit_perf(&app);
+}
+
+#[tauri::command]
+pub fn get_perf_metrics(state: State<'_, Arc<AppState>>) -> Vec<crate::perf::PerfMark> {
+    state.timings.snapshot()
+}
+
+/// Clone 弹窗初始数据:上次成功地址(默认填充)+ 默认目标目录。
+#[tauri::command]
+pub fn open_clone_dialog(state: State<'_, Arc<AppState>>) -> crate::clone::CloneDialogData {
+    let settings = state.settings();
+    crate::clone::CloneDialogData {
+        last_good_url: crate::clone::last_good_url(),
+        default_target: crate::clone::default_target_dir(&settings.repo_path),
+        official_url: "https://github.com/deepseek-ai/deepseek-harness.git".to_string(),
+    }
+}
+
+/// Clone 状态(上次成功地址等)。
+#[tauri::command]
+pub fn get_clone_state() -> crate::clone::CloneState {
+    crate::clone::load_clone_state()
+}
+
+/// 提交克隆请求:校验 URL 后保存为 pending_clone,并启动 clone-repo / full-setup 操作。
+#[tauri::command]
+pub fn submit_clone_request(
+    app: AppHandle,
+    request: crate::clone::CloneRequest,
+    full: bool,
+    state: State<'_, Arc<AppState>>,
+) -> Result<crate::contract::ActionAccepted, String> {
+    // 校验(不通过不进入流程;非法输入绝不覆盖 last-good)
+    crate::clone::validate_url(&request.url).map_err(|e| format!("克隆地址无效:{e}"))?;
+    if request.target_dir.trim().is_empty() {
+        return Err("目标目录不能为空".into());
+    }
+    *state.pending_clone.lock().unwrap() = Some(request);
+    let action = if full { "full-setup" } else { "clone-repo" };
+    Ok(state.run_action(&app, action))
+}
+
+/// 托管工具链安装快照(设置页展示来源/版本)。
+#[tauri::command]
+pub fn get_installation_snapshot(
+    state: State<'_, Arc<AppState>>,
+) -> crate::ops::InstallationSnapshot {
+    state.installation()
+}
+
+// ── M3:独立 chat WebView(零权限) ─────────────────────────
+
+/// 打开(或召回)内嵌 DSH chat 窗口:服务未就绪时先启动并异步等待。
+#[tauri::command]
+pub fn open_chat(app: AppHandle) -> Result<crate::chat::ChatStateSnapshot, String> {
+    crate::chat::open_chat(&app)
+}
+
+/// 关闭 chat 窗口(销毁;服务继续运行)。
+#[tauri::command]
+pub fn close_chat(app: AppHandle) {
+    crate::chat::close_chat(&app);
+}
+
+/// 当前 chat 窗口状态(事件 app://chat-state 之外的一次性查询)。
+#[tauri::command]
+pub fn get_chat_state(app: AppHandle) -> crate::chat::ChatStateSnapshot {
+    app.state::<Arc<crate::chat::ChatManager>>().current_state()
+}

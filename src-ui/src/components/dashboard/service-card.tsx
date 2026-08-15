@@ -27,6 +27,7 @@ function stateBadge(snap: AppSnapshot) {
   return <Badge variant="neutral">空闲</Badge>
 }
 
+/** 服务主卡:复刻 cc-switch 卡片(圆角描边 + 悬停泛蓝 + 图标方块)。 */
 export function ServiceCard({ snap, mode, onModeChange, onAction, onOpenDsh, onStop }: {
   snap: AppSnapshot
   mode: LaunchMode
@@ -36,45 +37,48 @@ export function ServiceCard({ snap, mode, onModeChange, onAction, onOpenDsh, onS
   onStop: () => void
 }) {
   const { url, webPid, startedAt } = snap
+  const running = snap.state === 'running'
   return (
-    <Card className="overflow-hidden border-[var(--primary)]/15 bg-gradient-to-br from-[var(--card)] via-[var(--card)] to-[color-mix(in_srgb,var(--primary)_7%,var(--card))]">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <span className="flex size-8 items-center justify-center rounded-xl bg-[var(--primary)]/10">
-            <Server className="size-4 text-[var(--primary)]" />
+    <Card className="group border-border">
+      {/* 悬停渐晕(cc-switch ProviderCard) */}
+      <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-blue-500/[0.07] to-transparent opacity-0 transition-opacity duration-500 group-hover:opacity-100" />
+      <CardHeader className="relative">
+        <CardTitle className="flex items-center gap-2.5">
+          <span className="flex size-8 items-center justify-center rounded-lg border border-border bg-muted transition-transform duration-300 group-hover:scale-105">
+            <Server className="size-4 text-blue-500" />
           </span>
           DeepSeek Harness
         </CardTitle>
         {stateBadge(snap)}
       </CardHeader>
-      <CardContent className="flex items-end justify-between gap-6 pt-4">
-        <div>
-          <p className="text-sm text-[var(--muted-foreground)]">
-          {url ? (
-            <>
-              <span className="font-mono text-[var(--foreground)]">{url}</span>
-              {webPid ? <span className="ml-2">PID {webPid}</span> : null}
-              <span className="ml-2">已运行 {formatDuration(startedAt)}</span>
-            </>
-          ) : (
-            '尚未启动 — 就绪后自动打开主界面'
-          )}
+      <CardContent className="relative flex items-end justify-between gap-6 pt-4">
+        <div className="min-w-0">
+          <p className="text-sm text-muted-foreground">
+            {url ? (
+              <>
+                <span className="font-mono text-foreground">{url}</span>
+                {webPid ? <span className="ml-2">PID {webPid}</span> : null}
+                <span className="ml-2">已运行 {formatDuration(startedAt)}</span>
+              </>
+            ) : (
+              '尚未启动 — 就绪后自动打开主界面'
+            )}
           </p>
-          <p className="mt-1.5 text-xs text-[var(--muted-foreground)]/80">
-            {snap.state === 'running'
+          <p className="mt-1.5 text-xs text-muted-foreground/80">
+            {running
               ? `当前为${snap.mode === 'dev' ? '开发模式（HMR）' : '普通运行'}，服务已由原生核心托管。`
-              : '在右侧选择启动方式；维护操作位于下方“仓库与构建”。'}
+              : '选择启动方式开始;仓库同步、环境检测等操作请进入下方功能入口。'}
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          {snap.state === 'running' ? (
-            <Button variant="default" size="sm" onClick={onOpenDsh}>
+          {running ? (
+            <Button size="sm" onClick={onOpenDsh}>
               <ExternalLink /> 打开 dsh
             </Button>
           ) : (
             <div className="flex items-end gap-2">
               <div>
-                <p className="mb-1.5 text-[11px] font-medium text-[var(--muted-foreground)]">启动方式</p>
+                <p className="mb-1.5 text-[11px] font-medium text-muted-foreground">启动方式</p>
                 <SegmentedControl
                   options={LAUNCH_MODES}
                   value={mode}
