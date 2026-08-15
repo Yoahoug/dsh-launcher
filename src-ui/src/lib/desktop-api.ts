@@ -39,7 +39,8 @@ export interface DesktopApi {
   clearLogs(): Promise<void>
   getSettings(): Promise<SettingsSnapshot>
   saveSettings(patch: Partial<SettingsSnapshot>): Promise<SettingsSnapshot>
-  inspectEnvironment(): Promise<EnvironmentSnapshot>
+  /** 环境检测(带文件缓存;force=true 强制重新探测)。 */
+  inspectEnvironment(force?: boolean): Promise<EnvironmentSnapshot>
   getDesktopSnapshot(): Promise<DesktopSnapshot>
   savePreferences(preferences: DesktopPreferences): Promise<DesktopPreferences>
   /** 完成/跳过首次运行引导(skip=true 跳过;提供 repoPath 时一并保存)。 */
@@ -92,7 +93,7 @@ export const desktopApi: DesktopApi = {
   clearLogs: () => invoke('clear_logs'),
   getSettings: () => invoke('get_settings'),
   saveSettings: (patch) => invoke('save_settings', { patch }),
-  inspectEnvironment: () => invoke('inspect_environment'),
+  inspectEnvironment: (force) => invoke('inspect_environment', { force }),
   getDesktopSnapshot: () => invoke('get_desktop_snapshot'),
   savePreferences: (preferences) => invoke('save_preferences', { preferences }),
   completeFirstRun: (skip, repoPath) => invoke('complete_first_run', { skip, repoPath }),

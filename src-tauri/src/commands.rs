@@ -49,9 +49,12 @@ pub fn save_settings(
     state.save_settings(&patch)
 }
 
+/// 环境检测(带文件缓存)。force=true 强制重新探测(「重新检测」按钮);
+/// 默认读缓存(成功即成功,秒开)。async:避免探测子进程阻塞主线程/其它 IPC。
 #[tauri::command]
-pub fn inspect_environment(state: State<'_, Arc<AppState>>) -> EnvironmentSnapshot {
-    state.environment()
+pub async fn inspect_environment(app: AppHandle, force: Option<bool>) -> EnvironmentSnapshot {
+    let state = app.state::<Arc<AppState>>().inner().clone();
+    state.environment(force.unwrap_or(false))
 }
 
 #[tauri::command]
@@ -208,9 +211,11 @@ pub fn get_perf_metrics(state: State<'_, Arc<AppState>>) -> Vec<crate::perf::Per
     state.timings.snapshot()
 }
 
-/// Clone 弹窗初始数据:上次成功地址(默认填充)+ 默认目标目录。
+/// Clone 弹窗初始数据:上次成功地址(默认填充)+ 默认目标目录(放置位置)。
+/// async:保证弹窗数据秒开,不参与任何阻塞探测。
 #[tauri::command]
-pub fn open_clone_dialog(state: State<'_, Arc<AppState>>) -> crate::clone::CloneDialogData {
+pub async fn open_clone_dialog(app: AppHandle) -> crate::clone::CloneDialogData {
+    let state = app.state::<Arc<AppState>>().inner().clone();
     let settings = state.settings();
     crate::clone::CloneDialogData {
         last_good_url: crate::clone::last_good_url(),

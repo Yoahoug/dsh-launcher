@@ -33,10 +33,13 @@ export function EnvPage({
   const [inst, setInst] = useState<InstallationSnapshot | null>(null)
   const [checking, setChecking] = useState(false)
 
-  const check = async () => {
+  const check = async (force = false) => {
     setChecking(true)
     try {
-      const [e, i] = await Promise.all([api.inspectEnvironment(), api.getInstallationSnapshot()])
+      const [e, i] = await Promise.all([
+        api.inspectEnvironment(force),
+        api.getInstallationSnapshot(),
+      ])
       setEnv(e)
       setInst(i)
     } catch (err) {
@@ -112,7 +115,7 @@ export function EnvPage({
               </div>
             ) : null}
             <div className="mt-4 flex flex-wrap items-center gap-2">
-              <Button variant="outline" size="sm" onClick={() => void check()} disabled={checking}>
+              <Button variant="outline" size="sm" onClick={() => void check(true)} disabled={checking}>
                 <RefreshCw className={checking ? 'animate-spin' : ''} /> 重新检测
               </Button>
               <p className="ml-auto text-xs text-muted-foreground">

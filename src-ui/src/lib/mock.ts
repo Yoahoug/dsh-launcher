@@ -281,7 +281,7 @@ export const mockApi: DesktopApi = {
     firstRunSkipped: false,
   }),
   saveSettings: async (patch) => ({ ...(await mockApi.getSettings()), ...patch }),
-  inspectEnvironment: async (): Promise<EnvironmentSnapshot> => ({
+  inspectEnvironment: async (_force?: boolean): Promise<EnvironmentSnapshot> => ({
     repoPath: '/Users/yoahoug/Desktop/deepseek-harness',
     repoUsable: { ok: true },
     distBuilt: true,
