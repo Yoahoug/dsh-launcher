@@ -6,13 +6,19 @@ use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+/// HOME(Windows 回退 USERPROFILE)。
+pub fn home_dir() -> String {
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_default()
+}
+
 /// 配置目录:环境变量可覆盖(便于测试),默认 ~/.config/。
 pub fn config_dir() -> PathBuf {
     if let Ok(d) = std::env::var("DSH_LAUNCHER_CONFIG_DIR") {
         return PathBuf::from(d);
     }
-    let home = std::env::var("HOME").unwrap_or_default();
-    Path::new(&home).join(".config")
+    Path::new(&home_dir()).join(".config")
 }
 
 /// 配置文件(与旧 Node daemon 同一路径,保证配置兼容)。
@@ -20,8 +26,7 @@ pub fn config_file() -> PathBuf {
     if let Ok(d) = std::env::var("DSH_LAUNCHER_CONFIG_DIR") {
         return PathBuf::from(d).join("dsh-launcher.json");
     }
-    let home = std::env::var("HOME").unwrap_or_default();
-    Path::new(&home).join(".config/dsh-launcher.json")
+    Path::new(&home_dir()).join(".config/dsh-launcher.json")
 }
 
 /// 运行态目录:pid 文件、状态快照、日志、托管 Node。
@@ -29,8 +34,7 @@ pub fn state_dir() -> PathBuf {
     if let Ok(d) = std::env::var("DSH_LAUNCHER_STATE_DIR") {
         return PathBuf::from(d);
     }
-    let home = std::env::var("HOME").unwrap_or_default();
-    Path::new(&home).join(".local/state/dsh-launcher")
+    Path::new(&home_dir()).join(".local/state/dsh-launcher")
 }
 
 pub fn logs_dir() -> PathBuf {
@@ -39,7 +43,7 @@ pub fn logs_dir() -> PathBuf {
 
 /// 展开路径中的 ~ 与 $HOME。
 pub fn expand_path(p: &str) -> String {
-    let home = std::env::var("HOME").unwrap_or_default();
+    let home = home_dir();
     match p {
         "~" => home,
         s if s.starts_with("~/") => format!("{}{}", home, &s[1..]),
@@ -244,7 +248,7 @@ mod tests {
         )
         .unwrap();
         let s = load();
-        let home = std::env::var("HOME").unwrap();
+        let home = home_dir();
         assert_eq!(s.repo_path, format!("{home}/Desktop/deepseek-harness"));
         assert_eq!(s.port, 3081);
         assert_eq!(s.ready_timeout_ms, 60_000);

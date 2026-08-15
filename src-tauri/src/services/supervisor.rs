@@ -31,6 +31,10 @@ pub struct Managed {
     pub job: windows_sys::Win32::Foundation::HANDLE,
 }
 
+/// Windows Job Object HANDLE 可跨线程使用,声明 Send(供 Mutex<Option<Managed>>)。
+#[cfg(windows)]
+unsafe impl Send for Managed {}
+
 impl Managed {
     fn new(
         pid: u32,
@@ -443,12 +447,12 @@ impl Supervisor {
     /// Windows:优雅信号优先,最终 TerminateJobObject(并释放 job 句柄)。
     #[cfg(windows)]
     fn kill(m: &mut Managed) -> StopOutcome {
-        use windows_sys::Win32::Foundation::HANDLE;
-        let job = std::mem::replace(&mut m.job, HANDLE::default());
+        let job = std::mem::take(&mut m.job);
         if job.is_null() {
             return StopOutcome::Missing;
         }
-        crate::services::supervisor::win::stop_job(m.pid, job)
+        // SAFETY: job 句柄由 create_job 创建且未被提前释放
+        unsafe { crate::services::supervisor::win::stop_job(m.pid, job) }
     }
 
     /// 停止全部托管进程。
@@ -579,15 +583,16 @@ pub fn log_file() -> PathBuf {
 #[cfg(windows)]
 pub mod win {
     use super::*;
+    use std::os::windows::io::AsRawHandle;
     use std::os::windows::process::CommandExt;
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     };
     use windows_sys::Win32::System::Threading::{
-        OpenProcess, TerminateJobObject, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW,
-        PROCESS_QUERY_INFORMATION, PROCESS_TERMINATE,
+        OpenProcess, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, PROCESS_QUERY_INFORMATION,
+        PROCESS_TERMINATE,
     };
 
     /// 创建进程:CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW(GUI 无控制台闪窗)。
@@ -627,7 +632,10 @@ pub mod win {
     }
 
     /// 停止:先优雅(GenerateConsoleCtrlEvent 到进程组),5s 后 TerminateJobObject。
-    pub fn stop_job(pid: u32, job: HANDLE) -> StopOutcome {
+    ///
+    /// # Safety
+    /// 调用方必须保证 `job` 是有效的 Job Object HANDLE,且未被并发释放。
+    pub unsafe fn stop_job(pid: u32, job: HANDLE) -> StopOutcome {
         // 优雅信号:CTRL_BREAK 到该进程组
         let process = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_TERMINATE, 0, pid) };
         if !process.is_null() {

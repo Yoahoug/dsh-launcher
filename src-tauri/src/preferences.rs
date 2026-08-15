@@ -14,7 +14,7 @@ pub fn config_dir() -> PathBuf {
     if let Ok(d) = std::env::var("DSH_LAUNCHER_CONFIG_DIR") {
         return PathBuf::from(d);
     }
-    let home = std::env::var("HOME").unwrap_or_default();
+    let home = crate::config::home_dir();
     Path::new(&home).join(".config/dsh-launcher")
 }
 
@@ -23,7 +23,7 @@ fn legacy_node_config() -> PathBuf {
     if let Ok(d) = std::env::var("DSH_LAUNCHER_CONFIG_DIR") {
         return PathBuf::from(d).join("dsh-launcher.json");
     }
-    let home = std::env::var("HOME").unwrap_or_default();
+    let home = crate::config::home_dir();
     Path::new(&home).join(".config/dsh-launcher.json")
 }
 

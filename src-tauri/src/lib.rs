@@ -176,7 +176,8 @@ pub fn run() {
 
     app.run(|app_handle, event| {
         match event {
-            // macOS:隐藏窗口后点 Dock 图标召回
+            // macOS:隐藏窗口后点 Dock 图标召回(Reopen 为 macOS 专属变体)
+            #[cfg(target_os = "macos")]
             RunEvent::Reopen { .. } => lifecycle::on_reopen(app_handle),
             // 保持托盘:阻止运行时自动退出请求;偏好 quit 时允许(执行 detach)
             RunEvent::ExitRequested { api, .. } => {
