@@ -8,7 +8,10 @@ rust-version = "1.82"
 
 [lib]
 name = "dsh_launcher_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# 仅桌面端:rlib(主程序链接)+ staticlib(兼容保留)。
+# 不生成 cdylib:mingw ld 对巨型导出表(数万符号)会报 export ordinal too large,
+# 且本项目无 iOS/Android 目标,cdylib 仅移动端使用。
+crate-type = ["staticlib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

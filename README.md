@@ -43,6 +43,10 @@ Tauri 2 原生核心(纯 Rust,无 Node daemon)+ React 控制台 · 一键启动 
 
 > 需要系统已安装 Node.js(`^22.19 || >=24`,dsh 开发本来就有的环境);没有时可在应用内「环境 → 安装托管 Node 24 LTS」一键安装。未配置开发者签名时系统会提示未知开发者:macOS 右键 → 打开,Windows 点「更多信息 → 仍要运行」。
 
+**Windows 绿色版(免安装,自测用)**:`dsh-launcher_<版本>_win-x64-portable.zip` 解压后双击
+`dsh-launcher.exe` 即可运行(`WebView2Loader.dll` 必须与 exe 同目录;Windows 10/11 自带 WebView2
+运行时,无需额外安装)。绿色版不内置自动更新,正式使用请装 NSIS 安装包。
+
 ### 方式二:源码运行(开发者,适合改启动器本身)
 
 ```sh
