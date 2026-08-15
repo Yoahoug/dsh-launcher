@@ -5,12 +5,97 @@
 use crate::config::{logs_dir, state_dir};
 use crate::contract::LogLevel;
 use crate::log_hub::LogHub;
-use crate::services::runtime::Tools;
+use crate::services::runtime::{self, Tools};
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+/// 从仓库 package.json 的 `scripts.dsh` 解析 dsh 入口参数。
+/// 形如 `node --import tsx/esm apps/cli/src/bin.ts` → `["--import","tsx/esm","apps/cli/src/bin.ts"]`。
+/// 解析失败/未声明时返回 None(调用方回退 pnpm)。
+fn dsh_entry_args(repo_path: &str) -> Option<Vec<String>> {
+    let raw = std::fs::read_to_string(Path::new(repo_path).join("package.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let script = v.get("scripts")?.get("dsh")?.as_str()?;
+    let rest = script.strip_prefix("node ")?.trim_start();
+    if rest.is_empty() {
+        return None;
+    }
+    let args: Vec<String> = rest.split_whitespace().map(String::from).collect();
+    if args.is_empty() {
+        None
+    } else {
+        Some(args)
+    }
+}
+
+/// 构建 dsh web 启动命令(含通用环境注入)。
+/// 返回 (启动描述, Command);启动描述用于报错与日志。
+fn build_dsh_web_cmd(
+    tools: &Tools,
+    repo_path: &str,
+    port_s: &str,
+    host: &str,
+    dsh_home: &str,
+) -> Result<(String, std::process::Command), String> {
+    let mut cmd;
+    let label_desc;
+    if let Some(entry_args) = dsh_entry_args(repo_path) {
+        // 直连 node:node <entry args> web --port <port> —— 单进程,无 pnpm/cmd/conhost 包装
+        let node = tools
+            .dsh_node_dir
+            .as_ref()
+            .map(|d| {
+                if cfg!(windows) {
+                    d.join("node.exe")
+                } else {
+                    d.join("node")
+                }
+            })
+            .filter(|p| p.is_file())
+            .or_else(|| runtime::resolve_executable("node"))
+            .ok_or_else(|| "未找到 node(需要 dsh 兼容 Node)".to_string())?;
+        let mut c = std::process::Command::new(&node);
+        c.args(&entry_args);
+        c.arg("web");
+        c.arg("--port");
+        c.arg(port_s);
+        if host != "127.0.0.1" && !host.is_empty() {
+            c.arg(format!("--host={host}"));
+        }
+        label_desc = "dsh web(node 直连)".to_string();
+        cmd = c;
+    } else {
+        // 回退:pnpm dsh web(仓库未声明 scripts.dsh 时)
+        let pnpm = tools
+            .pnpm
+            .as_ref()
+            .ok_or_else(|| "未找到 pnpm".to_string())?
+            .clone();
+        let mut c = std::process::Command::new(&pnpm);
+        let mut args = vec![
+            "dsh".to_string(),
+            "web".to_string(),
+            "--port".to_string(),
+            port_s.to_string(),
+        ];
+        if host != "127.0.0.1" && !host.is_empty() {
+            args.push(format!("--host={host}"));
+        }
+        c.args(&args);
+        label_desc = format!("pnpm dsh web --port {port_s}");
+        cmd = c;
+    }
+    cmd.current_dir(repo_path);
+    cmd.envs(tools.env());
+    if !dsh_home.is_empty() {
+        cmd.env("DSH_HOME", dsh_home);
+    }
+    cmd.env("DSH_NO_AUTOOPEN", "1");
+    Ok((label_desc, cmd))
+}
 
 /// 就绪行正则(与 dsh 仓库测试同款)。
 const READY_RE: &str = r"dsh web: (http://[^\s]+)";
@@ -101,7 +186,9 @@ impl Supervisor {
         }
     }
 
-    /// 启动 pnpm dsh web --port <port> [--host <host>]。
+    /// 启动 dsh web(--port <port> [--host <host>])。
+    /// 优先 node 直连仓库声明的 dsh 入口(绕过 pnpm.cmd → cmd.exe → node 包装链,
+    /// Windows 上不再冒出多余的 cmd.exe / conhost.exe 进程);仓库未声明 dsh 脚本时回退 pnpm。
     pub fn spawn_web(
         &self,
         tools: &Tools,
@@ -111,26 +198,8 @@ impl Supervisor {
         dsh_home: &str,
         on_ready: impl Fn(&str) + Send + Sync + 'static,
     ) -> Result<u32, String> {
-        let pnpm = tools
-            .pnpm
-            .as_ref()
-            .ok_or_else(|| "未找到 pnpm".to_string())?
-            .clone();
         let port_s = port.to_string();
-        let mut args = vec!["dsh", "web", "--port", port_s.as_str()];
-        let host_owned;
-        if host != "127.0.0.1" && !host.is_empty() {
-            host_owned = format!("--host={host}");
-            args.push(host_owned.as_str());
-        }
-        let mut cmd = std::process::Command::new(&pnpm);
-        cmd.args(&args);
-        cmd.current_dir(repo_path);
-        cmd.envs(tools.env());
-        if !dsh_home.is_empty() {
-            cmd.env("DSH_HOME", dsh_home);
-        }
-        cmd.env("DSH_NO_AUTOOPEN", "1");
+        let (label_desc, mut cmd) = build_dsh_web_cmd(tools, repo_path, &port_s, host, dsh_home)?;
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
         cmd.stdin(std::process::Stdio::null());
@@ -153,7 +222,7 @@ impl Supervisor {
 
         let mut child = cmd
             .spawn()
-            .map_err(|e| format!("无法启动 pnpm {args:?}:{e}"))?;
+            .map_err(|e| format!("无法启动 {label_desc}:{e}"))?;
         let pid = child.id();
         let exited = Arc::new(AtomicBool::new(false));
         let ready = Arc::new(Mutex::new(None));
@@ -610,10 +679,14 @@ pub fn port_holder_pid(port: u16) -> Option<u32> {
     }
     #[cfg(windows)]
     {
-        let out = std::process::Command::new("netstat")
-            .args(["-ano"])
-            .output()
-            .ok()?;
+        let mut cmd = std::process::Command::new("netstat");
+        cmd.args(["-ano"]);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW:不闪黑窗
+        }
+        let out = cmd.output().ok()?;
         let text = String::from_utf8_lossy(&out.stdout);
         let needle = format!(":{port}");
         for line in text.lines() {
@@ -805,10 +878,11 @@ pub mod win {
         let script = format!(
             "try {{ (Get-CimInstance Win32_Process -Filter \"ProcessId={pid}\").CommandLine }} catch {{ '' }}"
         );
-        let out = std::process::Command::new("powershell")
-            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-            .output()
-            .ok()?;
+        let mut cmd = std::process::Command::new("powershell");
+        cmd.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW:不闪黑窗
+        let out = cmd.output().ok()?;
         if !out.status.success() {
             return None;
         }
@@ -825,11 +899,47 @@ pub mod win {
         let script = format!(
             "$cur={pid}; $ancestor={ancestor}; $ok=$false; for($i=0; $i -lt 16; $i++) {{ try {{ $p=(Get-CimInstance Win32_Process -Filter \"ProcessId=$cur\").ParentProcessId }} catch {{ break }}; if($p -eq $ancestor) {{ $ok=$true; break }}; if(!$p -or $p -eq $cur) {{ break }}; $cur=$p }}; if($ok) {{ 'true' }} else {{ 'false' }}"
         );
-        std::process::Command::new("powershell")
-            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-            .output()
+        let mut cmd = std::process::Command::new("powershell");
+        cmd.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW:不闪黑窗
+        cmd.output()
             .ok()
             .filter(|out| out.status.success())
             .is_some_and(|out| String::from_utf8_lossy(&out.stdout).trim() == "true")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dsh_entry_args_parses_script() {
+        let base = std::env::temp_dir().join(format!("dsh-sup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(
+            base.join("package.json"),
+            r#"{"scripts":{"dsh":"node --import tsx/esm apps/cli/src/bin.ts"}}"#,
+        )
+        .unwrap();
+        let args = dsh_entry_args(&base.display().to_string()).unwrap();
+        assert_eq!(args, vec!["--import", "tsx/esm", "apps/cli/src/bin.ts"]);
+
+        // 未声明 dsh 脚本 → None(回退 pnpm)
+        std::fs::write(base.join("package.json"), r#"{"scripts":{}}"#).unwrap();
+        assert!(dsh_entry_args(&base.display().to_string()).is_none());
+        std::fs::write(base.join("package.json"), r#"{}"#).unwrap();
+        assert!(dsh_entry_args(&base.display().to_string()).is_none());
+
+        // 不是 "node ..." 开头 → None
+        std::fs::write(
+            base.join("package.json"),
+            r#"{"scripts":{"dsh":"tsx apps/cli/src/bin.ts"}}"#,
+        )
+        .unwrap();
+        assert!(dsh_entry_args(&base.display().to_string()).is_none());
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
