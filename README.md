@@ -2,96 +2,84 @@
 
 # ⚡ dsh-launcher
 
-**为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)(dsh)开发者打造的纯启动器**
+**为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)(dsh)开发者打造的桌面启动器**
 
-源码启动 dsh web · 一键更新构建 · 热重载开发模式 · 后台常驻 · 亮色单页控制台
-
-**零 npm 运行时依赖 —— 只用一个文件双击,其余全靠 Node 内置模块**
+Tauri 2 原生核心(纯 Rust,无 Node daemon)+ React 控制台 · 一键启动 / 构建 / 更新 dsh web · 后台常驻与托盘
 
 </div>
 
 ---
 
-## 🖼️ 长什么样
-
-双击 `start.command`,浏览器打开亮色控制台:
-
-| 空闲 | 运行中(就绪后自动打开主界面) | 失败(明确诊断,不闪退) |
-|---|---|---|
-| ![空闲](docs/images/console-idle.png) | ![运行中](docs/images/console-running.png) | ![失败](docs/images/console-failed.png) |
-
-> 定位铁律:**启动器只是一个启动器**。它不承载任何 dsh 界面——主界面永远是 `http://127.0.0.1:3080/`(dsh web),启动器只负责把它拉起来、托管进程、提供控制与日志。
-
 ## ✨ 功能
 
 | 操作 | 说明 |
 |---|---|
-| **启动** | 源码启动 `pnpm dsh web`(等价 `node --import tsx/esm apps/cli/src/bin.ts web`),**不用 npx、不装发布包**;就绪行命中 → 自动打开主界面 |
-| **开发模式** | 同跑 `dsh web` + `pnpm run dev:web`(HMR watcher);客户端插件/前端改动**免刷新热更**,`lib/` 产物改动点「重建并重启」 |
-| **更新并构建** | `git fetch` → 自动 stash → `git pull --rebase --autostash`(冲突**只报告、绝不 reset --hard**)→ lockfile 变化才 `pnpm install` → 阶段化构建 → 重启服务 |
-| **停止 / 重建并重启** | 进程组 SIGTERM → 5s → SIGKILL,零残留;重建保持原模式 |
-| **后台常驻** | 关掉浏览器/控制台不影响服务;launcher 重启后自动**召回**运行中的 dsh web;重复双击只召回,不重复起 |
-| **日志** | 控制台按来源(dsh web / dev:web / git / pnpm / launcher)着色、实时 SSE 推送;同时落盘 `~/.local/state/dsh-launcher/logs/` 可回溯 |
-| **Node 运行时** | dsh 要求 Node `^22.19 || >=24`(Node 23 的 tsx/tsdown 会崩溃);启动时自动扫描 nvm / volta / fnm / Homebrew node@22/24 并选用兼容版本;都没有时控制台可**一键安装 Node 24 LTS**(下载官方二进制到托管目录) |
-| **设置** | 仓库路径、端口、host、`DSH_HOME`、构建参数透传、开机自启(LaunchAgent) |
+| **首次运行向导** | 检测不到有效仓库时进入全屏引导:填写仓库路径或一键克隆 `deepseek-harness` |
+| **启动** | 在仓库内源码启动 `pnpm dsh web --port <port> [--host <host>]`;就绪行(`dsh web: http://…`)命中后自动打开主界面 |
+| **开发模式** | 同跑 `dsh web` + `pnpm run dev:web`(HMR);前端改动免刷新热更 |
+| **更新并构建** | `git pull --rebase --autostash`(冲突**只报告、绝不 reset --hard**)→ lockfile 变化才 `pnpm install` → 构建 → 重启服务 |
+| **重建并重启 / 停止** | 进程组停止(SIGTERM → 5s → SIGKILL),零残留;危险动作有确认弹窗 |
+| **托管工具链** | 签名 catalog(全部国内镜像)一键安装 Node 24 LTS / Git / pnpm 到托管目录;自动解析 dsh 兼容 Node(`^22.19 \|\| >=24`) |
+| **环境检查** | 仓库可用性、前端 dist 是否已构建、Node 版本是否在 dsh 范围内,逐项给出可执行诊断 |
+| **内嵌 dsh 窗口** | 「打开 dsh」在独立 WebView 窗口打开 `http://127.0.0.1:3080`(零权限、健康检查确认是预期 DSH 实例);也可用系统浏览器打开 |
+| **后台常驻** | 关窗默认最小化到托盘,服务不受影响;重启启动器后自动**召回**运行中的 dsh web(进程存活 + 命令行 + 端口三重校验) |
+| **托盘 / 单实例** | 托盘动态状态菜单 + 左键召回主窗口;重复启动只召回,不重复起 |
+| **日志** | 实时推送 + 按来源着色;落盘 `~/.local/state/dsh-launcher/logs/` 可回溯 |
+| **自动更新** | Tauri updater(minisign 签名),启动时自动检查或手动检查,下载安装后自动重启 |
+| **设置** | 仓库路径、端口、host、`DSH_HOME`、构建参数透传、超时、开机自启、主题(亮色/深色/跟随系统)、关窗行为 |
 
-## 🚀 快速开始(macOS)
+> 定位铁律:**启动器只是一个启动器**。它不承载任何 dsh 界面——主界面永远是 `http://127.0.0.1:3080/`(dsh web),启动器只负责把它拉起来、托管进程、提供控制与日志。
 
-### 方式一:下载安装包(推荐,支持内置更新)
+## 🚀 快速开始
+
+### 方式一:下载安装包(推荐,支持自动更新)
 
 从 [Releases](https://github.com/Yoahoug/dsh-launcher/releases) 下载:
 
-- **macOS**:`dsh-launcher-<版本>-darwin-universal.zip`(Intel + Apple Silicon 通用)→ 解压后把 `dsh-launcher.app` 拖入「应用程序」,双击即可
-- **Windows**:`dsh-launcher-<版本>-windows-x64.zip` → 解压后双击 `dsh-launcher.exe`
+- **macOS(Apple Silicon)**:`dsh-launcher_<版本>_aarch64.dmg` → 打开后把 `dsh-launcher.app` 拖入「应用程序」
+- **Windows 10/11 x64**:`dsh-launcher_<版本>_x64-setup.exe`(currentUser 安装,默认无需管理员;首次运行需联网下载 WebView2 运行时)
 
-> 需要系统已安装 Node.js(`^22.19 || >=24`,dsh 开发本来就有的环境)。macOS 首次打开若被 Gatekeeper 拦截:右键 → 打开。
+> 需要系统已安装 Node.js(`^22.19 || >=24`,dsh 开发本来就有的环境);没有时可在应用内「环境 → 安装托管 Node 24 LTS」一键安装。未配置开发者签名时系统会提示未知开发者:macOS 右键 → 打开,Windows 点「更多信息 → 仍要运行」。
 
 ### 方式二:源码运行(开发者,适合改启动器本身)
 
 ```sh
 git clone https://github.com/Yoahoug/dsh-launcher.git
-chmod +x dsh-launcher/bin/start.command    # 若权限未保留
+cd dsh-launcher
+pnpm install
+pnpm dev:desktop   # tauri dev:起 Rust 原生核心 + React 渲染器
 ```
 
-**双击 `bin/start.command`** → 控制台 `http://127.0.0.1:3090/` 自动打开(<0.5s)。点「启动」→ dsh web 就绪并自动打开主界面。
+需要本机具备 Rust 工具链(rustup)与 Node `^22.19 || >=24`。其他常用命令:`pnpm test:ui`(前端测试)、`pnpm typecheck`、`pnpm build:desktop`(打安装包)。
 
-## 🔄 内置更新(类似 cc-switch)
+## 🔄 自动更新
 
-打包安装的版本**内置自动更新**:启动时、每 6 小时、或手动点「设置 → 检查更新」,自动查询 GitHub Releases 最新版;
+打包安装的版本**内置自动更新**:启动时自动检查(可在设置中关闭),或点「设置 → 更新 → 立即检查更新」,查询 GitHub Releases:
 
-- 有新版本 → 控制台顶部出现「新版本 vX.Y.Z · 更新」横幅,一键下载安装;
-- 更新采用**版本目录 + 指针切换**(旧版本保留可回滚),完成后启动器自动重启,**正在运行的 dsh web 服务不受影响**(新实例直接召回接管);
-- git 检出运行时提示改用「更新并构建」拉取代码,不走内置更新。
-
-### 使用提示
-
-- dsh web 启动需前端 dist 已构建——首次请先点「**更新并构建**」。
-- 端口被占用(如 3080 已有实例)时会给出占用进程 PID 与换端口建议,改完设置重试即可。
-- **Node 版本**:dsh 工具链要求 Node `^22.19 || >=24`,Node 23 的 `dev:web` / 构建会崩溃(tsdown 的 `import-without-cache` 在 Node 23 下报 `ERR_INVALID_RETURN_PROPERTY_VALUE`)。启动器会自动选用系统里已装的兼容 Node(nvm / volta / fnm / Homebrew `node@22` / `node@24`);都没有时,控制台「设置 → Node 运行时」会给出**一键安装 Node 24 LTS** 按钮(下载官方二进制到 `~/.local/state/dsh-launcher/node/`,不依赖 brew/nvm),也可手动 `brew install node@24` 或 `nvm install 24` 后重启启动器。
+- 新版本经 **minisign 签名校验**后下载安装,完成后启动器自动重启;
+- 正在运行的 dsh web 服务不受影响——新实例启动后直接**召回**接管;
+- 源码运行时请用「更新并构建」拉取 dsh 代码,不走应用自更新。
 
 ## 🗂️ 结构
 
 ```
-bin/start.command       双击入口(起服务 → 开控制台;二次双击只召回)
-src/server.mjs          HTTP 服务 + SSE + 动作编排(状态机)
-src/process.mjs         进程托管 / 就绪检测 / 进程组停止
-src/repo.mjs            git 同步(冲突只报告)
-src/build.mjs           lockfile 比对 + 阶段化构建
-src/updater.mjs         内置更新(检查 Releases → 下载 → 指针切换 → 重启)
-src/nodeenv.mjs         Node 运行时解析(自动选用兼容版本)+ 一键安装 Node 24 LTS
-src/zip.mjs             零依赖 zip 解压
-src/log.mjs             环形日志 + 落盘 + 广播
-public/                 亮色单页控制台(纯 HTML/CSS/JS)
-native/launcher.c       原生启动器(win+mac 共用一份 C,打 .app / .exe)
-scripts/                LaunchAgent 自启 + 打包脚本
-.github/workflows/      GitHub Actions:v* tag → win+mac 资产 → Release
-assets/                 应用图标(.icns / .ico / logo.svg)
+src-tauri/               Tauri 2 原生核心(纯 Rust,无 Node daemon)
+  src/lib.rs             应用入口:插件、命令注册、启动 / 召回 / 迁移流程
+  src/commands.rs        IPC 命令(run_action / get_logs / check_for_update / …)
+  src/contract.rs        前后端共享契约(状态机 / 长任务 / 事件)
+  src/services/          进程托管(supervisor)、git 同步(repo)、构建(build)
+  src/ops.rs             长任务编排(journal / 取消 / 崩溃恢复)
+  src/toolchain.rs       托管工具链(签名 catalog + 国内镜像)
+  src/chat.rs            内嵌 dsh WebView(独立窗口,零权限)
+  src/tray.rs            托盘(动态状态菜单 + 召回)
+  src/log_hub.rs         日志中心(落盘 + 事件广播)
+src-ui/                  React + TypeScript + Vite 控制台
+  src/App.tsx            页面路由 + 动作分发
+  src/components/        dashboard / repo / env / logs / settings / first-run
+.github/workflows/       ci.yml + release.yml(v* tag → win+mac 资产 + 签名 latest.json)
+scripts/                 构建 / 校验脚本
+assets/                  应用图标
 ```
-
-## 📚 文档
-
-- 完整开发方案:[`doc/DEVELOPMENT-PLAN.md`](doc/DEVELOPMENT-PLAN.md)(需求、架构、里程碑、验收)
-- UI 原型:[`doc/ui/mockup.html`](doc/ui/mockup.html)(浏览器直接打开预览)
 
 ## 📄 License
 
