@@ -80,11 +80,11 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let settings = MenuItem::with_id(app, "settings", "设置", true, None::<&str>)?;
     let check_update = MenuItem::with_id(app, "check-update", "检查更新", true, None::<&str>)?;
     let sep3 = PredefinedMenuItem::separator(app)?;
-    let quit = MenuItem::with_id(app, "quit", "退出 Launcher", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "退出(停止 dsh 并退出)", true, None::<&str>)?;
     let stop_quit = MenuItem::with_id(
         app,
         "stop-and-quit",
-        "停止服务并退出…",
+        "停止服务并退出…(先确认)",
         running,
         None::<&str>,
     )?;
@@ -169,7 +169,9 @@ pub fn setup(app: &AppHandle) -> tauri::Result<TrayIcon<tauri::Wry>> {
                 let _ = app.state::<Arc<AppState>>().run_action(app, "check-update");
                 show_main_window(app);
             }
-            "quit" => crate::lifecycle::quit_launcher(app),
+            // 退出 = 完整退出:先停止 dsh(进程树),再退出;不再保留「detach 后台常驻」,
+            // 避免 Windows 上退出后残留 dsh/node 进程让用户困惑。
+            "quit" => crate::lifecycle::stop_and_quit(app),
             "stop-and-quit" => crate::lifecycle::request_stop_and_quit(app),
             _ => {}
         })

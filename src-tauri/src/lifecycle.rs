@@ -1,7 +1,7 @@
 // dsh-launcher · 生命周期:关闭隐藏、Dock/taskbar 策略、自启、退出语义。
 // 三条退出路径互不干扰:
-//   1. 普通退出(退出 Launcher):detach dsh(继续后台运行) → exit;
-//   2. 停止并退出:确认 → stop → 等待空闲 → detach → exit;
+//   1. 托盘「退出」/「停止并退出」:先停止 dsh 进程树,再退出(完整退出,无残留进程);
+//   2. 关窗(偏好 quit):detach dsh(继续后台运行) → exit;
 //   3. updater restart:由 updater 插件触发 app.exit(),不停止 dsh、不走普通退出清理。
 use crate::contract::{CloseBehavior, EVENT_PREFERENCES_CHANGED};
 use crate::state::AppState;
@@ -36,8 +36,15 @@ pub fn on_close_requested(app: &AppHandle, window: &tauri::Window, api: &tauri::
     }
 }
 
-/// ExitRequested:阻止运行时自动退出请求(保持托盘),除非偏好允许退出。
+/// ExitRequested:仅拦截「非显式退出」(如 macOS Cmd+Q 在托盘模式下应留在托盘)。
+/// 显式退出(托盘「退出」/「停止并退出」)会先置位 quit_requested,这里放行,
+/// 否则 app.exit() 被 prevent_exit 拦下,托盘图标消失但 exe 进程永远残留。
 pub fn on_exit_requested(app: &AppHandle, api: &tauri::ExitRequestApi) {
+    use std::sync::atomic::Ordering;
+    let state = app.state::<Arc<AppState>>();
+    if state.quit_requested.load(Ordering::SeqCst) {
+        return; // 显式退出:允许真正退出
+    }
     let prefs = app
         .state::<Arc<AppState>>()
         .preferences
@@ -67,6 +74,11 @@ fn detach(app: &AppHandle) {
 
 /// 普通退出:仅 detach(不停止 dsh),保存窗口状态由 window-state 插件完成。
 pub fn quit_launcher(app: &AppHandle) {
+    // 置位「显式退出」,on_exit_requested 才会放行,进程才能真正终止
+    use std::sync::atomic::Ordering;
+    app.state::<Arc<AppState>>()
+        .quit_requested
+        .store(true, Ordering::SeqCst);
     detach(app);
     remove_tray(app);
     app.exit(0);
