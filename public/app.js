@@ -15,6 +15,17 @@
   let paused = false
   const NODE_RANGE_TEXT = '^22.19 || >=24'
 
+  // 删除条件:legacy 控制台随桌面版稳定后移除(token 由 daemon 注入页面)
+  const TOKEN = window.__DSH_LAUNCHER_TOKEN__ || ''
+  const authHeaders = () => (TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {})
+  if (TOKEN) {
+    const rawFetch = window.fetch.bind(window)
+    window.fetch = (url, opts = {}) => rawFetch(url, {
+      ...opts,
+      headers: { ...(opts.headers || {}), ...authHeaders() },
+    })
+  }
+
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) => (
     { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
   ))
@@ -462,7 +473,7 @@
   }
 
   function connectSSE() {
-    const es = new EventSource('/api/events')
+    const es = new EventSource(`/api/events?token=${TOKEN}`)
     let connectedOnce = false
     es.addEventListener('log', (ev) => {
       try { appendLog(JSON.parse(ev.data)) } catch { /* ignore */ }

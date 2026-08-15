@@ -27,6 +27,35 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const PUBLIC = join(ROOT, 'public')
 const SCRIPTS = join(ROOT, 'scripts')
 
+// ── 桌面桥接鉴权(过渡期) ─────────────────────────────────
+// 由桌面 App(Rust bridge)启动时注入 DSH_LAUNCHER_TOKEN;
+// 未注入 = 旧启动方式(无鉴权兼容模式)。删除条件:Node daemon 整体移除时一并删除。
+const DAEMON_TOKEN = process.env.DSH_LAUNCHER_TOKEN || ''
+const ALLOWED_ORIGINS = new Set([
+  `http://127.0.0.1:${LAUNCHER_PORT}`,
+  `http://localhost:${LAUNCHER_PORT}`,
+])
+
+/** Origin 校验:仅放行同源浏览器与无 Origin 的非浏览器客户端(bridge)。 */
+function originAllowed(req) {
+  const origin = req.headers.origin
+  return !origin || ALLOWED_ORIGINS.has(origin)
+}
+
+/** Bearer token 校验(/api/health 之外全部 API 强制)。 */
+function authorized(req) {
+  if (!DAEMON_TOKEN) return true
+  return req.headers.authorization === `Bearer ${DAEMON_TOKEN}`
+}
+
+/** SSE 额外支持 ?token= 查询参数(legacy 控制台 EventSource 无法带自定义头)。删除条件:随 legacy UI 删除。 */
+function sseAuthorized(req) {
+  if (!DAEMON_TOKEN) return true
+  if (authorized(req)) return true
+  const q = new URL(req.url, 'http://x')
+  return q.searchParams.get('token') === DAEMON_TOKEN
+}
+
 // ── 启动自检 ─────────────────────────────────────────────
 
 const envWarnings = []
@@ -529,6 +558,13 @@ async function quitLauncher(reason) {
   setTimeout(() => process.exit(0), 200)
 }
 
+/** 桌面 App 正常退出:不停止已运行的 dsh web(交给下次召回接管)。 */
+async function detachLauncher(reason) {
+  log('launcher', `桌面 App 退出:${reason} — dsh web 继续后台运行(下次启动自动召回)`)
+  clearPid(PID_FILE)
+  setTimeout(() => process.exit(0), 200)
+}
+
 /** 动作分发。 */
 const ACTIONS = {
   start: () => actionStart('normal'),
@@ -539,6 +575,7 @@ const ACTIONS = {
   'install-node': () => actionInstallNode(),
   clear: () => { clearRing(); return Promise.resolve({ ok: true }) },
   quit: () => quitLauncher('控制台「退出启动器」'),
+  detach: () => detachLauncher('桌面 App 退出'),
 }
 
 // ── HTTP 服务 ────────────────────────────────────────────
@@ -555,6 +592,14 @@ function serveStatic(res, pathname) {
   if (!/^[a-z0-9._-]+$/i.test(file) || !existsSync(join(PUBLIC, file))) {
     res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })
     res.end('404 Not Found')
+    return
+  }
+  // 删除条件:legacy 控制台随桌面版稳定后移除,此注入一并删除
+  if (file === 'index.html' && DAEMON_TOKEN) {
+    const html = readFileSync(join(PUBLIC, file), 'utf8')
+    const injected = html.replace('<head>', `<head>\n<script>window.__DSH_LAUNCHER_TOKEN__=${JSON.stringify(DAEMON_TOKEN)}</script>`)
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' })
+    res.end(injected)
     return
   }
   const body = readFileSync(join(PUBLIC, file))
@@ -639,8 +684,21 @@ function applyAutostart(enabled) {
 }
 
 function handleApi(req, res, pathname) {
-  // ── SSE ──
-  if (pathname === '/api/events') { sse(res); return true }
+  // SSE:支持 ?token= 查询参数(legacy 控制台 EventSource 无法带自定义头)
+  if (pathname === '/api/events') {
+    if (!originAllowed(req) || !sseAuthorized(req)) {
+      sendJson(res, { ok: false, reason: 'unauthorized' }, 401)
+      return true
+    }
+    sse(res)
+    return true
+  }
+
+  // 其余 API 鉴权(/api/health 例外:仅暴露版本与 pid,无敏感信息)
+  if (pathname !== '/api/health') {
+    if (!originAllowed(req)) { sendJson(res, { ok: false, reason: 'origin-forbidden' }, 403); return true }
+    if (!authorized(req)) { sendJson(res, { ok: false, reason: 'unauthorized' }, 401); return true }
+  }
 
   // ── GET ──
   if (req.method === 'GET') {
@@ -689,7 +747,7 @@ function handleApi(req, res, pathname) {
         const fn = ACTIONS[body.action]
         if (!fn) { sendJson(res, { ok: false, reason: `未知动作 ${body.action}` }, 400); return }
         const r = await fn()
-        sendJson(res, { ok: r?.ok !== false, reason: r?.reason, aborted: r?.aborted })
+        sendJson(res, { ok: r?.ok !== false, reason: r?.reason, aborted: r?.aborted, already: r?.already })
       })()
       return true
     }
