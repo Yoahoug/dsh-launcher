@@ -633,7 +633,9 @@ pub mod win {
     }
 
     /// 停止:先优雅(GenerateConsoleCtrlEvent 到进程组),5s 后 TerminateJobObject。
-    /// unsafe:调用方必须保证 job 是有效的 Job Object HANDLE。
+    ///
+    /// # Safety
+    /// 调用方必须保证 `job` 是有效的 Job Object HANDLE,且未被并发释放。
     pub unsafe fn stop_job(pid: u32, job: HANDLE) -> StopOutcome {
         // 优雅信号:CTRL_BREAK 到该进程组
         let process = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_TERMINATE, 0, pid) };
