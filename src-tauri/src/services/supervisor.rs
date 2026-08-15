@@ -448,11 +448,12 @@ impl Supervisor {
     #[cfg(windows)]
     fn kill(m: &mut Managed) -> StopOutcome {
         use windows_sys::Win32::Foundation::HANDLE;
-        let job = std::mem::replace(&mut m.job, HANDLE::default());
+        let job = std::mem::take(&mut m.job);
         if job.is_null() {
             return StopOutcome::Missing;
         }
-        crate::services::supervisor::win::stop_job(m.pid, job)
+        // SAFETY: job 句柄由 create_job 创建且未被提前释放
+        unsafe { crate::services::supervisor::win::stop_job(m.pid, job) }
     }
 
     /// 停止全部托管进程。
@@ -632,7 +633,8 @@ pub mod win {
     }
 
     /// 停止:先优雅(GenerateConsoleCtrlEvent 到进程组),5s 后 TerminateJobObject。
-    pub fn stop_job(pid: u32, job: HANDLE) -> StopOutcome {
+    /// unsafe:调用方必须保证 job 是有效的 Job Object HANDLE。
+    pub unsafe fn stop_job(pid: u32, job: HANDLE) -> StopOutcome {
         // 优雅信号:CTRL_BREAK 到该进程组
         let process = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_TERMINATE, 0, pid) };
         if !process.is_null() {

@@ -55,6 +55,7 @@ pub fn on_exit_requested(app: &AppHandle, api: &tauri::ExitRequestApi) {
 }
 
 /// macOS Dock 图标召回(Reopen):恢复 Regular 并显示窗口。
+#[cfg(target_os = "macos")]
 pub fn on_reopen(app: &AppHandle) {
     crate::tray::show_main_window(app);
 }
