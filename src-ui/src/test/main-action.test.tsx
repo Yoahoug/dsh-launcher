@@ -9,7 +9,7 @@ import { ToastProvider } from '@/components/ui/toast'
 import type { AppSnapshot } from '@/types/schema'
 
 const base: AppSnapshot = {
-  version: '0.3.0', state: 'idle', mode: 'none', phase: '', error: null,
+  version: '0.3.1', state: 'idle', mode: 'none', phase: '', error: null,
   url: null, webPid: null, devPid: null, startedAt: null, readyAt: null,
   hmrActive: false, busy: false, launcherPid: 1,
   repo: { branch: 'main', head: 'abc', behind: 0, ahead: 0, dirty: false, dirtyFiles: 0, syncAt: null, remoteUpToDate: true },

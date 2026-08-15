@@ -80,7 +80,7 @@ pub fn run() {
                 "launcher",
                 LogLevel::Ok,
                 &format!(
-                    "DSH Launcher {} 启动 · 原生核心(v0.3.0,无 Node daemon)",
+                    "DSH Launcher {} 启动 · 原生核心(纯 Rust,无 Node daemon)",
                     env!("CARGO_PKG_VERSION")
                 ),
             );

@@ -265,7 +265,7 @@ impl AppState {
         if action == "check-update" || action == "apply-update" {
             return ActionAccepted {
                 ok: false,
-                reason: Some("自动更新由桌面版 v0.3.0 的内置 updater 提供(M5)".into()),
+                reason: Some("自动更新由桌面版内置 updater 提供".into()),
                 aborted: None,
                 already: None,
             };

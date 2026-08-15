@@ -28,7 +28,7 @@ export function TopBar({
             DSH Launcher
           </span>
           <span className="mt-0.5 block text-[10px] font-medium text-[var(--muted-foreground)]" data-tauri-drag-region>
-            v{snap?.version ?? '0.3.0'} · Desktop Core
+            v{snap?.version ?? '0.3.1'} · Desktop Core
           </span>
         </div>
         <Button
