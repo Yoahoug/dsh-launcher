@@ -1,0 +1,109 @@
+# dsh-launcher · GitHub Actions 打包发布(win + mac)
+# 触发:
+#   push v* tag        → 构建 win/mac 资产 + 创建 GitHub Release
+#   手动 Run workflow  → 仅构建并上传 Artifact,不发 Release
+# 资产名纯英文:{dsh-launcher}-{version}-darwin-universal.zip / -windows-x64.zip
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    name: 构建 macOS(.app)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 计算版本
+        id: ver
+        shell: bash
+        run: |
+          V="${GITHUB_REF_NAME#v}"
+          [ -n "$V" ] || V=$(node -p "require('./package.json').version")
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+
+      - name: 编译通用(arm64+x86_64)启动器
+        run: |
+          mkdir -p build
+          clang -O2 -arch arm64 -arch x86_64 -o build/dsh-launcher native/launcher.c
+
+      - name: 组装 .app 并压缩
+        shell: bash
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          bash scripts/package-macos.sh "$VERSION" build "$PWD/build/dsh-launcher"
+          cd build
+          zip -r "dsh-launcher-${VERSION}-darwin-universal.zip" dsh-launcher.app
+          ls -la *.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: build/dsh-launcher-*-darwin-universal.zip
+          if-no-files-found: error
+
+  build-windows:
+    name: 构建 Windows(.exe 便携包)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 计算版本
+        id: ver
+        shell: pwsh
+        run: |
+          $V = $env:GITHUB_REF_NAME -replace '^v',''
+          if (-not $V) { $V = (Get-Content package.json | ConvertFrom-Json).version }
+          "version=$V" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: 编译 GUI 启动器(GUI 子系统,无控制台窗口)
+        shell: cmd
+        run: |
+          if not exist build mkdir build
+          cl /O2 /Fe:build\dsh-launcher.exe native\launcher.c /link /SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup shell32.lib ws2_32.lib user32.lib
+
+      - name: 组装便携包并压缩
+        shell: pwsh
+        run: |
+          $VERSION = "${{ steps.ver.outputs.version }}"
+          powershell -ExecutionPolicy Bypass -File scripts/package-windows.ps1 -Version $VERSION -OutDir build -Exe build\dsh-launcher.exe
+          Compress-Archive -Path build\dsh-launcher-windows-x64 -DestinationPath "build\dsh-launcher-$VERSION-windows-x64.zip"
+          Get-ChildItem build\*.zip | Select-Object Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: build/dsh-launcher-*-windows-x64.zip
+          if-no-files-found: error
+
+  release:
+    name: 创建 Release
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: macos, path: dist }
+      - uses: actions/download-artifact@v4
+        with: { name: windows, path: dist }
+      - name: 发布
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -la dist
+          gh release create "$GITHUB_REF_NAME" \
+            dist/dsh-launcher-*-darwin-universal.zip \
+            dist/dsh-launcher-*-windows-x64.zip \
+            --generate-notes \
+            --title "dsh-launcher $GITHUB_REF_NAME" \
+            --notes "双击安装包 / 便携包即可使用;启动器内置自动更新(检查本 Release)。"

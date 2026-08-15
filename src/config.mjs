@@ -4,6 +4,7 @@ import { homedir } from 'node:os'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { connect } from 'node:net'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 /** 设置文件根目录(可被环境变量覆盖,便于测试与可移植)。 */
 export const CONFIG_DIR = process.env.DSH_LAUNCHER_CONFIG_DIR || join(homedir(), '.config')
@@ -19,7 +20,19 @@ export const DEV_PID_FILE = join(STATE_DIR, 'devweb.pid')
 /** 启动器自身监听端口(固定,单实例锚点)。 */
 export const LAUNCHER_PORT = 3090
 export const LAUNCHER_HOST = '127.0.0.1'
-export const LAUNCHER_VERSION = '0.1.0'
+
+/** 启动器根目录(server.mjs 所在包根)。 */
+export const ROOT_DIR = fileURLToPath(new URL('..', import.meta.url))
+
+/** 启动器版本:统一从 package.json 读取(单一事实来源)。 */
+function readLauncherVersion() {
+  try {
+    const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+    if (typeof manifest.version === 'string') return manifest.version
+  } catch { /* fallthrough */ }
+  return '0.0.0'
+}
+export const LAUNCHER_VERSION = readLauncherVersion()
 
 /** 默认设置(与方案 F11 对齐)。 */
 export const DEFAULTS = Object.freeze({
@@ -29,6 +42,7 @@ export const DEFAULTS = Object.freeze({
   dshHome: '',             // 空 = 继承环境默认(~/.dsh)
   autostart: false,        // 开机自启(LaunchAgent)
   openBrowser: true,       // 就绪后自动打开主界面
+  autoUpdateCheck: true,   // 内置更新:启动/定时自动检查 GitHub Releases
   buildArgs: '',           // 构建参数透传(追加到 pnpm run build 之后)
   readyTimeoutMs: 120_000, // 就绪等待上限
   startTimeoutMs: 120_000, // 启动等待上限

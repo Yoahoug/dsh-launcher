@@ -153,7 +153,39 @@ body {
 }
 .error-close:hover { opacity: 1; }
 /* hidden 属性优先于各组件自身的 display(避免空横幅/空标签外露) */
-.error-banner[hidden], .tag[hidden], .badge[hidden] { display: none; }
+.error-banner[hidden], .tag[hidden], .badge[hidden], .update-pill[hidden] { display: none; }
+
+/* ── 更新横幅 ─────────────────────────── */
+.update-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--primary-grad); color: #fff;
+  border: none; border-radius: 999px; padding: 5px 13px;
+  font-size: 12.5px; font-weight: 600; cursor: pointer;
+  box-shadow: 0 3px 10px rgba(77,107,254,.35);
+  transition: transform .12s, filter .15s;
+  white-space: nowrap;
+}
+.update-pill:hover { transform: translateY(-1px); filter: brightness(1.08); }
+.update-pill.installing { opacity: .8; cursor: progress; }
+.update-pill .spin { animation: rot 1.1s linear infinite; }
+@keyframes rot { to { transform: rotate(360deg); } }
+
+/* ── 设置里的更新区 ───────────────────── */
+.update-box {
+  margin: 0 16px 14px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: #FBFCFE; padding: 12px 14px;
+}
+.update-title { font-size: 12px; font-weight: 700; color: var(--text-2); margin-bottom: 4px; }
+.update-meta { font-size: 12px; color: var(--text-3); margin-bottom: 8px; }
+.update-meta .mono { color: var(--text-1); font-weight: 600; }
+.update-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.update-actions .btn-sec.up { flex: none; padding: 7px 16px; }
+.update-msg { font-size: 12px; color: var(--text-3); flex: 1; min-width: 120px; }
+.update-msg.ok { color: var(--success); }
+.update-msg.err { color: var(--danger); }
+.update-progress { margin-top: 10px; height: 6px; border-radius: 999px; background: #EEF1F6; overflow: hidden; }
+.update-progress .progress-bar { height: 100%; width: 0%; border-radius: 999px; background: var(--primary-grad); animation: none; margin-left: 0; transition: width .3s; }
 
 /* ── 状态条 ───────────────────────────── */
 .status-row {
@@ -252,6 +284,57 @@ details.settings summary:hover { color: var(--primary); }
 .settings-msg.ok { color: var(--success); }
 .settings-msg.err { color: var(--danger); }
 .btn-sec.save { flex: none; padding: 8px 22px; }
+
+/* ── 仓库构建状态提示 ──────────────────── */
+.repo-hint {
+  margin: 0 16px 12px;
+  font-size: 12px; color: var(--text-3);
+  border: 1px dashed var(--border); border-radius: var(--radius-sm);
+  padding: 8px 12px; background: #FBFCFE;
+}
+.repo-hint.ok { color: var(--success); border-color: #BBF7D0; background: var(--success-weak); }
+.repo-hint.warn { color: var(--warning); border-color: #FDE68A; background: var(--warning-weak); }
+.repo-hint.err { color: var(--danger); border-color: #FECACA; background: var(--danger-weak); }
+
+/* ── Node 运行时状态 ───────────────────── */
+.node-row {
+  margin: 0 16px 12px;
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 8px 12px; background: #FBFCFE;
+}
+.node-row[hidden] { display: none; }
+.node-info { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-2); min-width: 0; }
+.node-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--text-3); }
+.node-row.ok .node-dot { background: var(--success); }
+.node-row.warn .node-dot { background: var(--warning); }
+.node-row.err .node-dot { background: var(--danger); }
+.node-row.ok .node-info { color: var(--success); }
+.node-row.err .node-info { color: var(--danger); }
+.node-row .node-path { color: var(--text-3); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.node-row .btn-sec { flex: none; }
+
+/* ── 退出启动器 ───────────────────────── */
+.foot-quit { margin-top: 8px; }
+.foot-btn {
+  border: 1px solid var(--border); background: var(--surface); color: var(--text-2);
+  border-radius: 999px; padding: 4px 14px; font-size: 12px; font-weight: 600;
+  cursor: pointer; transition: all .15s;
+}
+.foot-btn:hover { border-color: var(--danger); color: var(--danger); background: var(--danger-weak); }
+.quit-overlay {
+  position: fixed; inset: 0; z-index: 50;
+  background: rgba(15, 23, 42, .35);
+  display: flex; align-items: center; justify-content: center;
+}
+.quit-overlay[hidden] { display: none; }
+.quit-card {
+  background: var(--surface); border-radius: var(--radius);
+  box-shadow: var(--shadow-lg); padding: 28px 32px; max-width: 380px; text-align: center;
+}
+.quit-title { font-size: 16px; font-weight: 700; margin-bottom: 8px; }
+.quit-desc { font-size: 13px; color: var(--text-2); margin-bottom: 18px; line-height: 1.7; }
+.quit-card .btn-main { display: inline-flex; }
 
 /* ── 页脚 ─────────────────────────────── */
 .foot {

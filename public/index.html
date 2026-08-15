@@ -17,6 +17,10 @@
       <div class="brand">dsh-launcher<small>DeepSeek Harness 开发启动器 · 控制台</small></div>
     </div>
     <div class="spacer"></div>
+    <button class="update-pill" id="updatePill" hidden>
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+      <span id="updatePillText">新版本</span>
+    </button>
     <span class="badge" id="modeBadge" hidden>标准模式</span>
     <span class="status-pill idle" id="statusPill"><span class="dot"></span><span id="statusText">空闲</span></span>
     <button class="btn-open" id="btnOpen">
@@ -120,6 +124,24 @@
         <label class="checkline"><input type="checkbox" id="setAutostart"> 开机自启(LaunchAgent,登录后常驻不开浏览器)</label>
       </div>
     </div>
+    <div class="node-row" id="nodeRow" hidden>
+      <div class="node-info">
+        <span class="node-dot" id="nodeDot"></span>
+        <span id="nodeText">检测中…</span>
+      </div>
+      <button class="btn-sec up" id="btnInstallNode" hidden>一键安装 Node 24 LTS</button>
+    </div>
+    <div class="repo-hint" id="repoHint"></div>
+    <div class="update-box" id="updateBox">
+      <div class="update-title">启动器更新</div>
+      <div class="update-meta">版本 <span class="mono" id="upVersion">—</span> · 形态 <span class="mono" id="upMode">—</span></div>
+      <div class="update-actions">
+        <button class="btn-sec up" id="btnCheckUpdate">检查更新</button>
+        <label class="checkline"><input type="checkbox" id="setAutoUpdate"> 自动检查更新</label>
+        <span class="update-msg" id="updateMsg"></span>
+      </div>
+      <div class="update-progress" id="updateProgress" hidden><div class="progress-bar" id="updateProgressBar"></div></div>
+    </div>
     <div class="settings-foot">
       <span class="settings-msg" id="settingsMsg"></span>
       <button class="btn-sec save" id="btnSaveSettings">保存设置</button>
@@ -128,6 +150,15 @@
 
   <div class="foot">
     <b>主界面:http://127.0.0.1:3080/</b><span class="sep">·</span>控制台:http://127.0.0.1:3090/<span class="sep">·</span>启动器只负责更新 · 构建 · 进程托管,不承载 dsh 界面
+    <div class="foot-quit"><button class="foot-btn" id="btnQuit">退出启动器</button></div>
+  </div>
+</div>
+
+<div class="quit-overlay" id="quitOverlay" hidden>
+  <div class="quit-card">
+    <div class="quit-title">启动器已退出</div>
+    <div class="quit-desc">dsh web 等托管进程已停止。需要再次使用时,双击 <b>start.command</b>(或重新打开 dsh-launcher App)即可。</div>
+    <button class="btn-main btn-start" id="btnReopen">重新打开控制台</button>
   </div>
 </div>
 

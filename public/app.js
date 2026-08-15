@@ -8,10 +8,12 @@
 
   let config = { repoPath: '', port: 3080, host: '127.0.0.1' }
   let st = null // 状态快照
+  let toolsNode = null // /api/config 里的 node 信息
   let buffer = [] // 日志缓冲
   let lastId = 0
   let enabledSrc = new Set(['launcher', 'dsh web', 'dev:web', 'git', 'pnpm'])
   let paused = false
+  const NODE_RANGE_TEXT = '^22.19 || >=24'
 
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) => (
     { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
@@ -53,6 +55,8 @@
     $('btnUpdate').disabled = busy
     $('btnRebuild').disabled = busy
     $('btnStop').disabled = !busy && st.state === 'idle'
+    const installBtn = $('btnInstallNode')
+    if (installBtn) installBtn.disabled = busy || st.state === 'starting'
 
     $('progress').classList.toggle('show', busy)
     $('phase').classList.toggle('show', !!st.phase)
@@ -68,13 +72,104 @@
       banner.hidden = true
     }
 
+    renderUpdate()
     renderService()
     renderRepo()
   }
 
+  // ── 内置更新 ──────────────────────────────────────────
+  function renderUpdate() {
+    const up = st.update || {}
+    const pill = $('updatePill')
+    if (up.available && !up.installing) {
+      pill.hidden = false
+      pill.classList.remove('installing')
+      $('updatePillText').textContent = `新版本 ${up.version} · 更新`
+    } else if (up.installing) {
+      pill.hidden = true
+      const bar = $('updateProgress')
+      bar.hidden = false
+      const p = up.progress ?? 0
+      $('updateProgressBar').style.width = `${p}%`
+      $('updateMsg').textContent = up.progress >= 99 ? '解压并切换中…' : `下载更新 ${p}%`
+    } else {
+      pill.hidden = true
+      $('updateProgress').hidden = true
+    }
+    if (up.mode) {
+      $('upMode').textContent = { git: 'git 检出', app: 'macOS App', portable: '便携包', dev: '开发运行' }[up.mode] || up.mode
+      $('upVersion').textContent = st.version || '—'
+    }
+    if (!up.installing && up.message && !up.available) {
+      $('updateMsg').textContent = up.message
+      $('updateMsg').className = 'update-msg' + (up.error ? ' err' : ' ok')
+    }
+  }
+
+  function updatePillClick() {
+    const up = st.update || {}
+    if (!up.available || up.installing) return
+    if (!confirm(`发现新版本 ${up.version}(当前 ${st.version})\n\n点击确定即下载并安装,完成后启动器自动重启(dsh web 服务不受影响)。`)) return
+    postJson('/api/update', { action: 'apply' }).then((r) => {
+      if (r.ok === false && r.error) toast(`更新失败:${r.error}`, 'err')
+    }).catch((err) => toast(`更新请求失败:${err.message}`, 'err'))
+  }
+
+  $('updatePill').addEventListener('click', updatePillClick)
+
+  $('btnCheckUpdate').addEventListener('click', async () => {
+    const msg = $('updateMsg')
+    msg.className = 'update-msg'
+    msg.textContent = '检查中…'
+    try {
+      const r = await postJson('/api/update', { action: 'check' })
+      const up = r.update || {}
+      if (up.available) {
+        msg.className = 'update-msg ok'
+        msg.textContent = `发现新版本 ${up.version} — 点击顶部横幅一键更新`
+      } else {
+        msg.className = 'update-msg' + (up.error ? ' err' : ' ok')
+        msg.textContent = up.message || (up.error ? `检查失败:${up.error}` : '已是最新版本')
+      }
+    } catch (err) {
+      msg.className = 'update-msg err'
+      msg.textContent = `检查失败:${err.message}`
+    }
+  })
+
   function defaultUrl() {
     return `http://${config.host || '127.0.0.1'}:${String(config.port || 3080)}/`
   }
+
+  // ── 仓库构建状态提示 ──────────────────────────────────
+  function updateRepoHint(distBuilt, usable) {
+    const hint = $('repoHint')
+    if (!usable || !usable.ok) {
+      hint.className = 'repo-hint err'
+      hint.textContent = usable && usable.reason ? `仓库不可用:${usable.reason}` : '仓库路径未配置'
+      return
+    }
+    if (distBuilt === true) {
+      hint.className = 'repo-hint ok'
+      hint.textContent = '✓ 前端已构建,可直接点「启动」,无需先构建'
+    } else {
+      hint.className = 'repo-hint warn'
+      hint.textContent = '⚠ 前端 dist 未构建 — 首次请先点「更新并构建」,之后即可直接「启动」'
+    }
+  }
+
+  // ── 退出启动器 ────────────────────────────────────────
+  $('btnQuit').addEventListener('click', async () => {
+    if (!confirm('退出启动器?\n\n将停止 dsh web / dev:web 等全部托管进程,并关闭启动器服务本身。')) return
+    try {
+      await postJson('/api/action', { action: 'quit' })
+    } catch { /* 服务可能已退出,忽略 */ }
+    $('quitOverlay').hidden = false
+  })
+  $('btnReopen').addEventListener('click', () => {
+    window.location.reload()
+    // 若服务已重启,reload 会重新连上;否则提示
+  })
 
   function uptimeText() {
     if (st.state !== 'running' || !st.startedAt) return '未运行'
@@ -244,6 +339,7 @@
     $('setBuildArgs').value = config.buildArgs || ''
     $('setOpen').checked = !!config.openBrowser
     $('setAutostart').checked = !!config.autostart
+    $('setAutoUpdate').checked = config.autoUpdateCheck !== false
   }
 
   $('btnSaveSettings').addEventListener('click', async () => {
@@ -255,6 +351,7 @@
       buildArgs: $('setBuildArgs').value.trim(),
       openBrowser: $('setOpen').checked,
       autostart: $('setAutostart').checked,
+      autoUpdateCheck: $('setAutoUpdate').checked,
     }
     try {
       const r = await postJson('/api/config', patch)
@@ -263,11 +360,71 @@
         toast('设置已保存 ✓', 'ok')
         fillSettings()
         renderState()
+        // 仓库路径可能变了,重新拉构建状态
+        fetch('/api/config').then((x) => x.json()).then((x) => {
+          if (x.ok) updateRepoHint(x.distBuilt, x.usable)
+        }).catch(() => {})
       } else {
         toast(`保存失败:${r.reason}`, 'err')
       }
     } catch (err) {
       toast(`保存失败:${err.message}`, 'err')
+    }
+  })
+
+  // ── Node 运行时状态 ────────────────────────────────────
+  function renderNode() {
+    const row = $('nodeRow')
+    if (!row || !toolsNode) { if (row) row.hidden = true; return }
+    row.hidden = false
+    const dot = $('nodeDot')
+    const text = $('nodeText')
+    const btn = $('btnInstallNode')
+    if (toolsNode.inRange) {
+      row.className = 'node-row ok'
+      dot.className = 'node-dot'
+      text.textContent = `Node ${toolsNode.current} 符合 dsh 要求(${toolsNode.current})`
+      btn.hidden = true
+    } else if (toolsNode.used) {
+      row.className = 'node-row ok'
+      dot.className = 'node-dot'
+      text.textContent = `当前 Node ${toolsNode.current} 不在 dsh 范围,已自动选用 Node ${toolsNode.usedVersion}`
+      const path = document.createElement('span')
+      path.className = 'node-path'
+      path.textContent = toolsNode.used
+      text.appendChild(path)
+      btn.hidden = true
+    } else {
+      row.className = 'node-row err'
+      dot.className = 'node-dot'
+      text.textContent = `Node ${toolsNode.current} 不在 dsh 范围(${NODE_RANGE_TEXT})— 开发模式 / 构建不可用`
+      btn.hidden = false
+    }
+  }
+
+  $('btnInstallNode').addEventListener('click', async () => {
+    if (!confirm('将下载官方 Node 24 LTS(约 50MB)并安装到启动器托管目录,安装后自动选用。继续?')) return
+    const btn = $('btnInstallNode')
+    btn.disabled = true
+    try {
+      const r = await postJson('/api/action', { action: 'install-node' })
+      if (r.ok === false && r.reason === 'busy') {
+        toast('上一个操作仍在进行,请稍候', 'err')
+      } else if (r.ok === false) {
+        toast('安装失败,详见日志与诊断横幅', 'err')
+      }
+      // 等安装完成后(状态离开 starting/busy)拉一次最新配置,刷新 Node 状态
+      const poll = async () => {
+        const s = await fetch('/api/state').then((x) => x.json()).catch(() => null)
+        if (s && s.ok && s.state.busy) { setTimeout(poll, 1500); return }
+        const c = await fetch('/api/config').then((x) => x.json()).catch(() => null)
+        if (c && c.ok) { toolsNode = c.tools && c.tools.node; renderNode() }
+        btn.disabled = false
+      }
+      setTimeout(poll, 1200)
+    } catch (err) {
+      toast(`安装请求失败:${err.message}`, 'err')
+      btn.disabled = false
     }
   })
 
@@ -280,7 +437,13 @@
         fetch('/api/state').then((r) => r.json()),
         fetch('/api/logs?since=0').then((r) => r.json()),
       ])
-      if (cfgRes.ok) { config = cfgRes.config; fillSettings() }
+      if (cfgRes.ok) {
+        config = cfgRes.config
+        toolsNode = cfgRes.tools && cfgRes.tools.node
+        fillSettings()
+        updateRepoHint(cfgRes.distBuilt, cfgRes.usable)
+        renderNode()
+      }
       if (stRes.ok) { st = stRes.state; renderState() }
       if (logRes.ok) {
         buffer = logRes.logs || []

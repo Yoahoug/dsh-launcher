@@ -32,9 +32,21 @@
 | **停止 / 重建并重启** | 进程组 SIGTERM → 5s → SIGKILL,零残留;重建保持原模式 |
 | **后台常驻** | 关掉浏览器/控制台不影响服务;launcher 重启后自动**召回**运行中的 dsh web;重复双击只召回,不重复起 |
 | **日志** | 控制台按来源(dsh web / dev:web / git / pnpm / launcher)着色、实时 SSE 推送;同时落盘 `~/.local/state/dsh-launcher/logs/` 可回溯 |
+| **Node 运行时** | dsh 要求 Node `^22.19 || >=24`(Node 23 的 tsx/tsdown 会崩溃);启动时自动扫描 nvm / volta / fnm / Homebrew node@22/24 并选用兼容版本;都没有时控制台可**一键安装 Node 24 LTS**(下载官方二进制到托管目录) |
 | **设置** | 仓库路径、端口、host、`DSH_HOME`、构建参数透传、开机自启(LaunchAgent) |
 
 ## 🚀 快速开始(macOS)
+
+### 方式一:下载安装包(推荐,支持内置更新)
+
+从 [Releases](https://github.com/Yoahoug/dsh-launcher/releases) 下载:
+
+- **macOS**:`dsh-launcher-<版本>-darwin-universal.zip`(Intel + Apple Silicon 通用)→ 解压后把 `dsh-launcher.app` 拖入「应用程序」,双击即可
+- **Windows**:`dsh-launcher-<版本>-windows-x64.zip` → 解压后双击 `dsh-launcher.exe`
+
+> 需要系统已安装 Node.js(`^22.19 || >=24`,dsh 开发本来就有的环境)。macOS 首次打开若被 Gatekeeper 拦截:右键 → 打开。
+
+### 方式二:源码运行(开发者,适合改启动器本身)
 
 ```sh
 git clone https://github.com/Yoahoug/dsh-launcher.git
@@ -43,11 +55,19 @@ chmod +x dsh-launcher/bin/start.command    # 若权限未保留
 
 **双击 `bin/start.command`** → 控制台 `http://127.0.0.1:3090/` 自动打开(<0.5s)。点「启动」→ dsh web 就绪并自动打开主界面。
 
+## 🔄 内置更新(类似 cc-switch)
+
+打包安装的版本**内置自动更新**:启动时、每 6 小时、或手动点「设置 → 检查更新」,自动查询 GitHub Releases 最新版;
+
+- 有新版本 → 控制台顶部出现「新版本 vX.Y.Z · 更新」横幅,一键下载安装;
+- 更新采用**版本目录 + 指针切换**(旧版本保留可回滚),完成后启动器自动重启,**正在运行的 dsh web 服务不受影响**(新实例直接召回接管);
+- git 检出运行时提示改用「更新并构建」拉取代码,不走内置更新。
+
 ### 使用提示
 
 - dsh web 启动需前端 dist 已构建——首次请先点「**更新并构建**」。
 - 端口被占用(如 3080 已有实例)时会给出占用进程 PID 与换端口建议,改完设置重试即可。
-- 开发模式需要 Node `^22.19 || >=24`(本机 23 时控制台会明确提示;`dev:web` 的 tsx/tsdown 与 Node 23 不兼容)。
+- **Node 版本**:dsh 工具链要求 Node `^22.19 || >=24`,Node 23 的 `dev:web` / 构建会崩溃(tsdown 的 `import-without-cache` 在 Node 23 下报 `ERR_INVALID_RETURN_PROPERTY_VALUE`)。启动器会自动选用系统里已装的兼容 Node(nvm / volta / fnm / Homebrew `node@22` / `node@24`);都没有时,控制台「设置 → Node 运行时」会给出**一键安装 Node 24 LTS** 按钮(下载官方二进制到 `~/.local/state/dsh-launcher/node/`,不依赖 brew/nvm),也可手动 `brew install node@24` 或 `nvm install 24` 后重启启动器。
 
 ## 🗂️ 结构
 
@@ -57,9 +77,15 @@ src/server.mjs          HTTP 服务 + SSE + 动作编排(状态机)
 src/process.mjs         进程托管 / 就绪检测 / 进程组停止
 src/repo.mjs            git 同步(冲突只报告)
 src/build.mjs           lockfile 比对 + 阶段化构建
+src/updater.mjs         内置更新(检查 Releases → 下载 → 指针切换 → 重启)
+src/nodeenv.mjs         Node 运行时解析(自动选用兼容版本)+ 一键安装 Node 24 LTS
+src/zip.mjs             零依赖 zip 解压
 src/log.mjs             环形日志 + 落盘 + 广播
 public/                 亮色单页控制台(纯 HTML/CSS/JS)
-scripts/                LaunchAgent 开机自启安装/卸载
+native/launcher.c       原生启动器(win+mac 共用一份 C,打 .app / .exe)
+scripts/                LaunchAgent 自启 + 打包脚本
+.github/workflows/      GitHub Actions:v* tag → win+mac 资产 → Release
+assets/                 应用图标(.icns / .ico / logo.svg)
 ```
 
 ## 📚 文档

@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process'
 import { log } from './log.mjs'
 import { children } from './process.mjs'
 import { lockfileChanged } from './repo.mjs'
+import { toolEnv } from './tools.mjs'
 
 const STAGE_RE = /build:lib:host|build:lib:client|build:web/
 const STAGE_LABEL = {
@@ -24,7 +25,7 @@ function blameStage(tail) {
 /** 运行 pnpm 命令,流式输出;track=true 时注册为可停止的流程子进程。 */
 export function runPnpm(cwd, args, { label, track = true, onLine } = {}) {
   return new Promise((resolve) => {
-    const child = spawn('pnpm', args, { cwd, env: { ...process.env }, stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn('pnpm', args, { cwd, env: toolEnv(), stdio: ['ignore', 'pipe', 'pipe'] })
     if (track) children.op = child
     const tail = []
     const push = (line, level = 'info') => {

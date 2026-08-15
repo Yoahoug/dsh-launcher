@@ -3,6 +3,7 @@
 // 任何阶段失败 → failed(带诊断),用户可重试。
 import { writeFileSync } from 'node:fs'
 import { STATE_FILE } from './config.mjs'
+import { LAUNCHER_VERSION } from './config.mjs'
 import { log } from './log.mjs'
 
 export const STATES = Object.freeze({
@@ -31,7 +32,7 @@ export const STATE_LABEL = Object.freeze({
 const subscribers = new Set()
 
 export const state = {
-  version: '0.1.0',
+  version: LAUNCHER_VERSION,
   state: STATES.IDLE,
   mode: 'none',          // none | normal | dev
   phase: '',             // 进度文案(构建/同步阶段)
@@ -48,6 +49,11 @@ export const state = {
   },
   busy: false,           // 是否有流程进行中
   launcherPid: process.pid,
+  update: {              // 内置更新状态
+    mode: null, checking: false, available: false,
+    version: null, url: null, size: null, notes: null,
+    message: null, error: null, installing: false, progress: null,
+  },
 }
 
 /** 更新状态并广播。partial 直接浅合并。 */
