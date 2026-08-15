@@ -583,6 +583,7 @@ pub fn log_file() -> PathBuf {
 #[cfg(windows)]
 pub mod win {
     use super::*;
+    use std::os::windows::io::AsRawHandle;
     use std::os::windows::process::CommandExt;
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     use windows_sys::Win32::System::JobObjects::{
