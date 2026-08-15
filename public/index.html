@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>dsh-launcher · 控制台</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234D6BFE'/%3E%3Ctext x='16' y='22' font-size='15' font-weight='700' text-anchor='middle' fill='white' font-family='-apple-system,sans-serif'%3Edsh%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="container">
+
+  <!-- 顶栏 -->
+  <div class="topbar">
+    <div class="logo">dsh</div>
+    <div>
+      <div class="brand">dsh-launcher<small>DeepSeek Harness 开发启动器 · 控制台</small></div>
+    </div>
+    <div class="spacer"></div>
+    <span class="badge" id="modeBadge" hidden>标准模式</span>
+    <span class="status-pill idle" id="statusPill"><span class="dot"></span><span id="statusText">空闲</span></span>
+    <button class="btn-open" id="btnOpen">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+      打开主界面
+    </button>
+  </div>
+
+  <!-- 主操作区 -->
+  <div class="actions">
+    <div class="actions-primary">
+      <button class="btn-main btn-start" id="btnStart">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+        启动
+      </button>
+      <button class="btn-main btn-dev" id="btnDev">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+        开发模式
+      </button>
+      <button class="btn-main btn-update" id="btnUpdate">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"/><path d="M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+        更新并构建
+      </button>
+    </div>
+    <div class="actions-secondary">
+      <button class="btn-sec danger" id="btnStop">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+        停止
+      </button>
+      <button class="btn-sec" id="btnRebuild">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+        重建并重启
+      </button>
+      <button class="btn-sec" id="btnClear">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+        清空日志
+      </button>
+    </div>
+    <div class="progress" id="progress"><div class="progress-bar"></div></div>
+    <div class="phase" id="phase"></div>
+  </div>
+
+  <!-- 失败诊断横幅 -->
+  <div class="error-banner" id="errorBanner" hidden>
+    <div class="error-ico">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+    </div>
+    <div class="error-body">
+      <div class="error-summary" id="errorSummary"></div>
+      <div class="error-detail" id="errorDetail"></div>
+    </div>
+    <button class="error-close" id="errorClose" title="关闭">✕</button>
+  </div>
+
+  <!-- 状态条 -->
+  <div class="status-row">
+    <div class="status-card">
+      <div class="label">服务 dsh web</div>
+      <div class="value"><span class="mono" id="svcUrl">—</span></div>
+      <div class="meta" id="svcMeta">未运行</div>
+    </div>
+    <div class="status-card">
+      <div class="label">仓库</div>
+      <div class="value"><span class="mono" id="repoHead">—</span><span class="tag clean" id="repoTag" hidden>工作区干净</span></div>
+      <div class="meta" id="repoMeta"></div>
+    </div>
+  </div>
+
+  <!-- 日志区 -->
+  <div class="log-panel">
+    <div class="log-head">
+      <span class="title">日志</span>
+      <button class="chip on" data-src="dsh web">dsh web</button>
+      <button class="chip on" data-src="dev:web">dev:web</button>
+      <button class="chip on" data-src="git">git</button>
+      <button class="chip on" data-src="pnpm">pnpm</button>
+      <button class="chip on" data-src="launcher">launcher</button>
+      <div class="log-tools">
+        <button class="chip" id="btnPause">⏸ 暂停</button>
+        <button class="chip" id="btnTop">置顶</button>
+      </div>
+    </div>
+    <div class="log-body" id="log"></div>
+    <div class="log-empty" id="logEmpty">暂无日志</div>
+  </div>
+
+  <!-- 设置 -->
+  <details class="settings" id="settings">
+    <summary>
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      设置
+    </summary>
+    <div class="settings-grid">
+      <div class="field"><label>仓库路径(dsh checkout)</label><input id="setRepo" spellcheck="false" placeholder="~/Desktop/deepseek-harness"></div>
+      <div class="field"><label>dsh web 端口</label><input id="setPort" inputmode="numeric" placeholder="3080"></div>
+      <div class="field"><label>host</label><input id="setHost" placeholder="127.0.0.1"></div>
+      <div class="field"><label>DSH_HOME(留空 = 环境默认 ~/.dsh)</label><input id="setDshHome" placeholder="~/.dsh"></div>
+      <div class="field"><label>构建参数透传(追加到 pnpm run build 后)</label><input id="setBuildArgs" placeholder=""></div>
+      <div class="field check">
+        <label class="checkline"><input type="checkbox" id="setOpen"> 就绪后自动打开主界面</label>
+        <label class="checkline"><input type="checkbox" id="setAutostart"> 开机自启(LaunchAgent,登录后常驻不开浏览器)</label>
+      </div>
+    </div>
+    <div class="settings-foot">
+      <span class="settings-msg" id="settingsMsg"></span>
+      <button class="btn-sec save" id="btnSaveSettings">保存设置</button>
+    </div>
+  </details>
+
+  <div class="foot">
+    <b>主界面:http://127.0.0.1:3080/</b><span class="sep">·</span>控制台:http://127.0.0.1:3090/<span class="sep">·</span>启动器只负责更新 · 构建 · 进程托管,不承载 dsh 界面
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

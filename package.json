@@ -3,11 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Pure launcher for DeepSeek Harness dev workflow: source launch, update+build, HMR dev mode, background daemon, light console UI.",
+  "description": "Pure launcher for DeepSeek Harness dev workflow: source launch, update+build, HMR dev mode, background daemon, light console UI. 零运行时依赖,仅 Node 内置模块。",
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
   },
   "scripts": {
-    "start": "node src/server.mjs"
-  }
+    "start": "node src/server.mjs",
+    "check": "node --check src/server.mjs && node --check src/config.mjs && node --check src/log.mjs && node --check src/state.mjs && node --check src/process.mjs && node --check src/repo.mjs && node --check src/build.mjs"
+  },
+  "packageManager": "pnpm@11.21.0+sha512.521705bce689924eac72f5a3587122f362689ef6571e55ba80076fd637c11132ecffada26fad4ea79c485bfddbfd3d5a2a5b05805a77e893de71ec8a6cca3bb1"
 }
