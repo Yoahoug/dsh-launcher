@@ -5,12 +5,36 @@ on:
     tags: ['v*']
 
 jobs:
-  publish:
-    strategy:
-      fail-fast: false
-      matrix:
-        platform: [macos-latest, windows-latest]
-    runs-on: ${{ matrix.platform }}
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create draft release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VER="${{ github.ref_name }}"
+          VER="${VER/v/}"
+          gh release create "${{ github.ref_name }}" \
+            --draft \
+            --title "DSH Launcher ${{ github.ref_name }}" \
+            --notes "## DSH Launcher ${{ github.ref_name }}
+
+            DeepSeek Harness 桌面启动器 — Tauri 原生核心(无 Node daemon)。
+
+            ### 安装说明
+            - **macOS(Apple Silicon)**: 下载 \`dsh-launcher_${VER}_aarch64.dmg\` 并打开。未签名应用首次打开请在 Finder 中右键 →「打开」。
+
+            ### 自动更新
+            应用内「设置 → 更新 → 立即检查更新」即可在线升级到本版本。
+
+            > Windows 构建为后续开发方向，暂不提供。"
+
+  build-macos:
+    needs: create-release
+    runs-on: macos-latest
     permissions:
       contents: write
     steps:
@@ -28,27 +52,116 @@ jobs:
       - name: pnpm install
         run: pnpm install --frozen-lockfile
 
-      - name: build & upload release
-        uses: tauri-apps/tauri-action@v0
+      - name: Build bundles
+        shell: bash
+        run: pnpm tauri build --bundles app,dmg
+
+      - name: Package updater artifact
+        shell: bash
+        run: |
+          cd src-tauri/target/release/bundle/macos
+          tar -czf dsh-launcher_aarch64.app.tar.gz dsh-launcher.app
+
+      - name: Upload release assets
+        shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          cd src-tauri/target/release/bundle
+          find . -type f \( -name '*.dmg' -o -name '*.tar.gz' \) -print0 | \
+            xargs -0 -I{} gh release upload "${{ github.ref_name }}" "{}" --clobber
+
+  sign:
+    needs: build-macos
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'DSH Launcher ${{ github.ref_name }}'
-          releaseBody: |
-            ## DSH Launcher ${{ github.ref_name }}
+          node-version: 24
+          cache: pnpm
 
-            DeepSeek Harness 桌面启动器 — Tauri 原生核心(无 Node daemon)。
+      - name: pnpm install
+        run: pnpm install --frozen-lockfile
 
-            ### 安装说明
-            - **macOS(Apple Silicon)**: 下载 `dsh-launcher.dmg` 并打开。未签名应用首次打开请在 Finder 中右键 →「打开」。
-            - **Windows**: 下载 `dsh-launcher-setup.exe` 并运行。
+      - name: Download updater artifact
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p updater
+          gh release download "${{ github.ref_name }}" \
+            --pattern '*.tar.gz' --dir updater
+          ls -la updater
 
-            ### 自动更新
-            应用内「设置 → 更新 → 立即检查更新」即可在线升级到本版本。
-          releaseDraft: false
-          prerelease: false
-          createUpdaterArtifacts: true
-          tauriScript: pnpm tauri
+      - name: Sign updater artifact
+        env:
+          KEY_CONTENT: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          KEY_PASS: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          printf '%s' "$KEY_CONTENT" > /tmp/updater.key
+          cd updater
+          for f in *.tar.gz; do
+            pnpm tauri signer sign \
+              -f /tmp/updater.key \
+              -p "$KEY_PASS" \
+              "$f"
+          done
+          ls -la
+
+      - name: Generate latest.json
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            const tag = process.env.TAG;
+            const version = tag.replace(/^v/, "");
+            const entries = fs.readdirSync("updater");
+            const sigFiles = entries.filter((f) => f.endsWith(".sig"));
+            if (sigFiles.length !== 1) {
+              throw new Error("expected exactly one .sig file, got: " + entries.join(","));
+            }
+            const signature = fs.readFileSync(`updater/${sigFiles[0]}`, "utf8").trim();
+            const platforms = {
+              "darwin-aarch64": {
+                signature,
+                url: `https://github.com/Yoahoug/dsh-launcher/releases/download/${tag}/dsh-launcher_aarch64.app.tar.gz`,
+              },
+            };
+            const json = {
+              version,
+              notes: `DSH Launcher ${tag}`,
+              pub_date: new Date().toISOString(),
+              platforms,
+            };
+            fs.writeFileSync("latest.json", JSON.stringify(json, null, 2) + "\n");
+            console.log("latest.json written");
+          '
+
+      - name: Upload signature and latest.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd updater
+          for f in *.sig; do
+            gh release upload "${{ github.ref_name }}" "$f" --clobber
+          done
+          cd ..
+          gh release upload "${{ github.ref_name }}" latest.json --clobber
+
+  publish:
+    needs: sign
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "${{ github.ref_name }}" --draft=false
+          gh release view "${{ github.ref_name }}" --json assets -q '.assets[] | .name'
