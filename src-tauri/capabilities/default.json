@@ -1,0 +1,24 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "dsh-launcher 主窗口最小权限集(无通用 shell 权限)",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:default",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-focus",
+    "core:window:allow-minimize",
+    "core:window:allow-unminimize",
+    "core:window:allow-set-skip-taskbar",
+    "core:event:default",
+    "dialog:default",
+    "opener:default",
+    "log:default",
+    "window-state:default",
+    "autostart:allow-enable",
+    "autostart:allow-disable",
+    "autostart:allow-is-enabled"
+  ]
+}

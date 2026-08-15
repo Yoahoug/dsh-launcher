@@ -1,15 +1,47 @@
 {
   "name": "dsh-launcher",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
-  "description": "Pure launcher for DeepSeek Harness dev workflow: source launch, update+build, HMR dev mode, background daemon, light console UI. 零运行时依赖,仅 Node 内置模块。",
+  "description": "DSH Launcher — DeepSeek Harness 启动器桌面版(Tauri 原生核心)",
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
   },
   "scripts": {
-    "start": "node src/server.mjs",
-    "check": "node --check src/server.mjs && node --check src/config.mjs && node --check src/log.mjs && node --check src/state.mjs && node --check src/process.mjs && node --check src/repo.mjs && node --check src/build.mjs && node --check src/updater.mjs && node --check src/zip.mjs && node --check src/tools.mjs && node --check src/nodeenv.mjs"
+    "test:ui": "vitest run --config src-ui/vite.config.ts",
+    "dev:renderer": "vite --config src-ui/vite.config.ts",
+    "build:renderer": "vite build --config src-ui/vite.config.ts",
+    "preview:renderer": "vite preview --config src-ui/vite.config.ts",
+    "typecheck": "tsc --noEmit -p src-ui/tsconfig.json",
+    "tauri": "tauri",
+    "dev:desktop": "tauri dev",
+    "build:desktop": "tauri build"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.9.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tailwind-merge": "^2.5.4"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.0.0",
+    "@tauri-apps/cli": "^2.9.0",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.4",
+    "@types/node": "^26.2.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "@vitest/coverage-v8": "^3.2.7",
+    "jsdom": "^25.0.1",
+    "tailwindcss": "^4.0.0",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.3",
+    "vitest": "^3.2.7"
   },
   "packageManager": "pnpm@11.21.0+sha512.521705bce689924eac72f5a3587122f362689ef6571e55ba80076fd637c11132ecffada26fad4ea79c485bfddbfd3d5a2a5b05805a77e893de71ec8a6cca3bb1"
 }

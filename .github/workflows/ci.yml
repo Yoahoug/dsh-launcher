@@ -1,0 +1,58 @@
+name: ci
+
+on:
+  push:
+    branches: ['main', 'codex/**']
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  desktop-ci:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.21.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: pnpm install
+        run: pnpm install --frozen-lockfile
+
+      - name: typecheck
+        run: pnpm typecheck
+
+      - name: ui tests
+        run: pnpm test:ui
+
+      - name: renderer build
+        run: pnpm build:renderer
+
+      - name: cargo fmt
+        run: cargo fmt --check
+        working-directory: src-tauri
+
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+        working-directory: src-tauri
+
+      - name: cargo test
+        run: cargo test
+        working-directory: src-tauri
+
+      - name: tauri build (debug, no bundle)
+        run: pnpm tauri build --debug --no-bundle
