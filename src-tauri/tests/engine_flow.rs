@@ -51,6 +51,7 @@ fn free_port() -> u16 {
     l.local_addr().unwrap().port()
 }
 
+#[cfg(unix)]
 fn make_tools() -> (Tools, std::path::PathBuf) {
     let dir = fake_bin_dir();
     let tools = Tools {
