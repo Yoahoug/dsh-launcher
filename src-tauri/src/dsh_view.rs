@@ -40,8 +40,10 @@ pub const TITLEBAR_HEIGHT: f64 = 64.0;
 // ── 几何计算(纯函数,可单测) ─────────────────────────────
 
 /// 子 WebView 的目标几何(逻辑坐标):
+///
 /// - 顶部栏可见(默认):标题栏以下全部区域;
 /// - 顶部栏隐藏(全屏 + DeepSeek 工作区自动隐藏 chrome):占满整个窗口,DeepSeek 真全屏。
+///
 /// `inner` 是窗口内区物理尺寸,`scale` 是当前 DPI 缩放因子。
 pub fn dsh_view_geometry(
     inner: PhysicalSize<u32>,
