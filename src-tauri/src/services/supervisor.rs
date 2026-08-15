@@ -447,7 +447,6 @@ impl Supervisor {
     /// Windows:优雅信号优先,最终 TerminateJobObject(并释放 job 句柄)。
     #[cfg(windows)]
     fn kill(m: &mut Managed) -> StopOutcome {
-        use windows_sys::Win32::Foundation::HANDLE;
         let job = std::mem::take(&mut m.job);
         if job.is_null() {
             return StopOutcome::Missing;
