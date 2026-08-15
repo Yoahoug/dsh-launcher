@@ -60,9 +60,14 @@ fn terminate_daemon(pid: u32, log: &Arc<LogHub>) {
     {
         let _ = (pid, log);
         // Windows 旧 daemon 由 3090 探测 + taskkill 兜底
-        let _ = std::process::Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .output();
+        let mut cmd = std::process::Command::new("taskkill");
+        cmd.args(["/PID", &pid.to_string(), "/T", "/F"]);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW:不闪黑窗
+        }
+        let _ = cmd.output();
     }
 }
 

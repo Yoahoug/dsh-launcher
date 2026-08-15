@@ -163,6 +163,17 @@ pub fn run() {
                     "未找到 pnpm:启动/开发模式/更新并构建不可用,可「安装托管工具链」",
                 );
             }
+            if tools.git.is_none() {
+                log_hub.append(
+                    "launcher",
+                    LogLevel::Warn,
+                    if cfg!(windows) {
+                        "未找到系统 git:克隆/更新并构建不可用,可「安装托管工具链」安装托管 MinGit"
+                    } else {
+                        "未找到系统 git:克隆/更新并构建不可用,请安装 Xcode Command Line Tools 或 Homebrew git"
+                    },
+                );
+            }
             // 托管工具优先(active pointer)
             let tools = Tools {
                 pnpm: crate::toolchain::resolve_pnpm(&tools),

@@ -52,6 +52,11 @@ impl RepoService {
         cmd.envs(self.tools.env());
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW:不闪黑窗
+        }
         let mut child = cmd.spawn().map_err(|e| format!("无法执行 git:{e}"))?;
         // stdout/stderr 并发消费,防止单侧管道写满而死锁
         let out: String;
@@ -98,14 +103,18 @@ impl RepoService {
             .as_ref()
             .ok_or_else(|| "未找到 git".to_string())?
             .clone();
-        let mut child = std::process::Command::new(&git)
-            .args(args)
-            .current_dir(cwd)
-            .envs(self.tools.env())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|e| format!("无法执行 git:{e}"))?;
+        let mut cmd = std::process::Command::new(&git);
+        cmd.args(args);
+        cmd.current_dir(cwd);
+        cmd.envs(self.tools.env());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW:不闪黑窗
+        }
+        let mut child = cmd.spawn().map_err(|e| format!("无法执行 git:{e}"))?;
 
         let deadline = Instant::now() + STATUS_COMMAND_TIMEOUT;
         let status = loop {

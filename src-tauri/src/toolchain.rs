@@ -289,10 +289,21 @@ fn install_component(
 
     // 4. 工具自检
     on_stage(&format!("自检 {}…", entry.id));
+    // 注入托管 Node 目录等(Windows 上 pnpm.cmd / git wrapper 依赖 PATH;macOS 同理,
+    // 避免「安装了托管 Node 但当前进程 PATH 没有它」导致 .cmd shim 自检失败)。
+    let selfcheck_env = {
+        let node_dir = runtime::resolve_dsh_node().and_then(|(b, _)| b.parent().map(PathBuf::from));
+        let t = runtime::Tools {
+            pnpm: Some(bin.clone()),
+            git: None,
+            dsh_node_dir: node_dir,
+        };
+        t.env()
+    };
     let selfcheck = match entry.id.as_str() {
-        "node" => runtime::probe_version(&bin),
-        "mingit" => run_selfcheck(&bin, &["--version"]),
-        "pnpm" => run_selfcheck(&bin, &["--version"]),
+        "node" => runtime::probe_version_with(&bin, &selfcheck_env),
+        "mingit" => run_selfcheck(&bin, &["--version"], &selfcheck_env),
+        "pnpm" => run_selfcheck(&bin, &["--version"], &selfcheck_env),
         _other => None,
     };
     if selfcheck.is_none() {
@@ -378,12 +389,16 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-fn run_selfcheck(bin: &Path, args: &[&str]) -> Option<String> {
-    let out = std::process::Command::new(bin).args(args).output().ok()?;
-    if !out.status.success() {
+fn run_selfcheck(
+    bin: &Path,
+    args: &[&str],
+    env: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let (ok, out) = runtime::run_captured(bin, args, env, runtime::PROBE_TIMEOUT)?;
+    if !ok {
         return None;
     }
-    let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let v = out.trim().to_string();
     if v.is_empty() {
         None
     } else {
@@ -594,7 +609,16 @@ pub fn current_git(tools: &Tools) -> ToolRuntime {
         };
     };
     let managed = is_managed_path(&bin);
-    match run_selfcheck(&bin, &["--version"]) {
+    let selfcheck_env = {
+        let node_dir = runtime::resolve_dsh_node().and_then(|(b, _)| b.parent().map(PathBuf::from));
+        let t = runtime::Tools {
+            pnpm: None,
+            git: Some(bin.clone()),
+            dsh_node_dir: node_dir,
+        };
+        t.env()
+    };
+    match run_selfcheck(&bin, &["--version"], &selfcheck_env) {
         Some(v) => {
             // "git version 2.47.0" → 展示为 "2.47.0"
             let version = v.strip_prefix("git version ").unwrap_or(&v).to_string();
@@ -614,7 +638,11 @@ pub fn current_git(tools: &Tools) -> ToolRuntime {
             path: Some(bin.display().to_string()),
             status: ToolCheck::Incompatible,
             verified: false,
-            hint: Some("检测到 git 但无法运行;macOS/Linux 请重装系统 Git".into()),
+            hint: Some(if cfg!(windows) {
+                "检测到 git 但无法运行;请重装 Git for Windows,或改用托管 MinGit".into()
+            } else {
+                "检测到 git 但无法运行;macOS/Linux 请重装系统 Git".into()
+            }),
             managed_available,
         },
     }

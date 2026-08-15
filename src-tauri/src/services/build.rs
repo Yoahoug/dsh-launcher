@@ -55,7 +55,9 @@ pub fn run_pnpm(
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x00000008 | 0x08000000); // CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
+        // CREATE_NEW_PROCESS_GROUP(0x200)| CREATE_NO_WINDOW(0x08000000):
+        // 0x8 是 DETACHED_PROCESS,会让 cmd.exe 执行 .cmd(pnpm.cmd)时子进程输出丢失。
+        cmd.creation_flags(0x00000200 | 0x08000000); // CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
     }
     let mut child = cmd.spawn().map_err(|e| format!("无法执行 pnpm:{e}"))?;
 
