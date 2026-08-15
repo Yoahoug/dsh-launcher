@@ -34,7 +34,7 @@ if [ "$1" = "dsh" ] && [ "$2" = "web" ]; then
       *) shift ;;
     esac
   done
-  nc -l 127.0.0.1 "$port" >/dev/null 2>&1 &
+  while true; do nc -l 127.0.0.1 "$port" >/dev/null 2>&1; done &
   echo "dsh web: http://127.0.0.1:$port/"
   wait
 fi
