@@ -88,6 +88,37 @@ pub fn save_preferences(
     Ok(saved)
 }
 
+/// 完成/跳过首次运行引导(skip=true 跳过;提供 repo_path 时一并保存)。
+/// 广播 state-changed 使 renderer 的 desktop snapshot 立即刷新并退出向导。
+#[tauri::command]
+pub fn complete_first_run(
+    app: AppHandle,
+    skip: bool,
+    repo_path: Option<String>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<DesktopSnapshot, String> {
+    state.complete_first_run(&app, skip, repo_path)
+}
+
+/// 主窗口顶部栏(启动器 chrome)是否隐藏;隐藏时 DeepSeek 子 WebView 占满全窗。
+/// 仅由 renderer 在全屏 + DeepSeek 工作区自动隐藏时调用。
+#[tauri::command]
+pub fn set_topbar_hidden(app: AppHandle, hidden: bool) {
+    crate::dsh_view::set_topbar_hidden(&app, hidden);
+}
+
+/// 光标相对主窗口客户区的位置(逻辑坐标)。renderer 全屏自动隐藏顶部栏时轮询。
+/// 返回 None 表示无法获取(窗口不存在等),调用方保持当前隐藏状态即可。
+#[tauri::command]
+pub fn get_cursor_position(app: AppHandle) -> Option<(f64, f64)> {
+    use tauri::Manager;
+    let window = app.get_window("main")?;
+    let pos = window.cursor_position().ok()?;
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let scale = if scale > 0.0 { scale } else { 1.0 };
+    Some((pos.x / scale, pos.y / scale))
+}
+
 /// 危险动作:先弹原生确认框,确认后执行。stop-and-quit 走完整退出流程。
 #[tauri::command]
 pub async fn confirm_and_run(app: AppHandle, action: String) -> Result<ActionAccepted, String> {

@@ -42,6 +42,12 @@ export interface DesktopApi {
   inspectEnvironment(): Promise<EnvironmentSnapshot>
   getDesktopSnapshot(): Promise<DesktopSnapshot>
   savePreferences(preferences: DesktopPreferences): Promise<DesktopPreferences>
+  /** 完成/跳过首次运行引导(skip=true 跳过;提供 repoPath 时一并保存)。 */
+  completeFirstRun(skip: boolean, repoPath?: string): Promise<DesktopSnapshot>
+  /** 顶部栏隐藏状态(全屏 + DeepSeek 工作区自动隐藏 chrome 时同步给原生侧)。 */
+  setTopbarHidden(hidden: boolean): Promise<void>
+  /** 光标相对主窗口客户区的位置(逻辑坐标 [x, y];null = 无法获取)。 */
+  getCursorPosition(): Promise<[number, number] | null>
   checkForUpdate(): Promise<UpdateCheckResult>
   applyUpdate(): Promise<ActionAccepted>
   openDsh(): Promise<void>
@@ -89,6 +95,9 @@ export const desktopApi: DesktopApi = {
   inspectEnvironment: () => invoke('inspect_environment'),
   getDesktopSnapshot: () => invoke('get_desktop_snapshot'),
   savePreferences: (preferences) => invoke('save_preferences', { preferences }),
+  completeFirstRun: (skip, repoPath) => invoke('complete_first_run', { skip, repoPath }),
+  setTopbarHidden: (hidden) => invoke('set_topbar_hidden', { hidden }),
+  getCursorPosition: () => invoke('get_cursor_position'),
   checkForUpdate: () => invoke('check_for_update'),
   applyUpdate: () => invoke('apply_update'),
   openDsh: () => invoke('open_dsh'),

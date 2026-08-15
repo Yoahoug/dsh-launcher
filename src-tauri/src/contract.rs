@@ -233,6 +233,9 @@ pub struct SettingsSnapshot {
     pub build_args: String,
     pub ready_timeout_ms: u64,
     pub start_timeout_ms: u64,
+    /// 首次运行是否已处理(跳过或完成)。为 true 时不再展示首次运行向导,
+    /// 即使仓库当前不可用(用户可在启动器内随时克隆/配置)。
+    pub first_run_skipped: bool,
 }
 
 /// 主题偏好。
@@ -515,6 +518,7 @@ impl Default for SettingsSnapshot {
             build_args: String::new(),
             ready_timeout_ms: 120_000,
             start_timeout_ms: 120_000,
+            first_run_skipped: false,
         }
     }
 }

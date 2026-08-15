@@ -47,6 +47,9 @@ function AppInner() {
       : 'dashboard',
   )
   const [logsLevel, setLogsLevel] = React.useState<LogLevel | undefined>(undefined)
+  // 首次运行向导本会话内已处理(跳过/完成):即使 desktop 事件尚未刷新也立即退出向导,
+  // 避免「跳过成功却再次看到向导」的闪烁;持久化由 Rust firstRunSkipped 保证。
+  const [firstRunDismissed, setFirstRunDismissed] = React.useState(false)
 
   // 主题:偏好驱动 + 系统变化监听
   React.useEffect(() => {
@@ -116,9 +119,17 @@ function AppInner() {
     )
   }
 
-  // 首次运行:无有效仓库时进入引导(全屏向导,不套壳)
-  if (!desktop.firstRunDone && page !== 'first-run') {
-    return <FirstRunPage onDone={goDashboard} onOpenSettings={() => setPage('settings')} />
+  // 首次运行:无有效仓库且引导未处理时进入全屏向导(不套壳)。
+  // 跳过/完成后 firstRunDismissed 置位,本会话立即进入主界面。
+  if (!desktop.firstRunDone && !firstRunDismissed && page !== 'first-run') {
+    return (
+      <FirstRunPage
+        onDone={() => {
+          setFirstRunDismissed(true)
+          goDashboard()
+        }}
+      />
+    )
   }
 
   return (
@@ -193,7 +204,12 @@ function AppInner() {
                   {page === 'logs' && <LogsPage initialLevel={logsLevel} onBack={goDashboard} />}
                   {page === 'settings' && <SettingsPage onBack={goDashboard} />}
                   {page === 'first-run' && (
-                    <FirstRunPage onDone={goDashboard} onOpenSettings={() => setPage('settings')} />
+                    <FirstRunPage
+                      onDone={() => {
+                        setFirstRunDismissed(true)
+                        goDashboard()
+                      }}
+                    />
                   )}
                 </motion.div>
               </AnimatePresence>

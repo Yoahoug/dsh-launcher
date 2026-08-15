@@ -18,7 +18,7 @@ import type {
 import type { DesktopApi } from '@/lib/desktop-api'
 import { EVENTS } from '@/types/schema'
 
-const VERSION = '0.5.0'
+const VERSION = '0.6.0'
 
 const baseRepo = {
   branch: 'main',
@@ -114,6 +114,9 @@ function loadPrefs(): DesktopPreferences {
 
 let prefs = loadPrefs()
 
+/** mock 首次运行状态:completeFirstRun 后置 true(与 Rust firstRunSkipped 对齐)。 */
+let mockFirstRunDone = false
+
 // ── M4.1:DeepSeek 工作区(dsh-content 子 WebView)mock 状态机 ──
 // 与 Rust dsh_view 语义对齐:accepted ≠ success;只有服务 running + 视图 ready
 // 才自动进入 DeepSeek 工作区;失败/取消留在启动器或错误状态。
@@ -178,6 +181,7 @@ export function __resetDshView() {
   for (const id of pendingTimers) clearTimeout(id)
   pendingTimers.clear()
   current = mockSnapshot()
+  mockFirstRunDone = false
   dshView = {
     workspace: 'launcher',
     status: 'not_created',
@@ -274,6 +278,7 @@ export const mockApi: DesktopApi = {
     port: 3080, host: '127.0.0.1', dshHome: '', autostart: false,
     openBrowser: true, autoUpdateCheck: true, buildArgs: '',
     readyTimeoutMs: 120_000, startTimeoutMs: 120_000,
+    firstRunSkipped: false,
   }),
   saveSettings: async (patch) => ({ ...(await mockApi.getSettings()), ...patch }),
   inspectEnvironment: async (): Promise<EnvironmentSnapshot> => ({
@@ -302,8 +307,18 @@ export const mockApi: DesktopApi = {
     // ?theme=dark|light|system 可临时覆盖主题(浏览器预览用)
     const themeOverride = q.get('theme')
     const preferences = themeOverride ? { ...prefs, theme: themeOverride as DesktopPreferences['theme'] } : { ...prefs }
-    return { preferences, firstRunDone: !firstRun, version: VERSION }
+    return { preferences, firstRunDone: mockFirstRunDone || !firstRun, version: VERSION }
   },
+  completeFirstRun: async (_skip, _repoPath): Promise<DesktopSnapshot> => {
+    mockFirstRunDone = true
+    // 广播 state-changed 让 useDesktopSnapshot 立即刷新,退出向导(与 Rust 行为一致)
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('mock:state', { detail: current }))
+    }
+    return { preferences: { ...prefs }, firstRunDone: true, version: VERSION }
+  },
+  setTopbarHidden: async () => {},
+  getCursorPosition: async () => [400, 600],
   savePreferences: async (p: DesktopPreferences) => {
     prefs = { ...p }
     try { localStorage.setItem('mock:preferences', JSON.stringify(prefs)) } catch { /* ignore */ }

@@ -28,6 +28,8 @@ export function Dashboard({
       </div>
     )
   }
+  // 仓库不可用(未配置/非 git 仓库)时给出下一步指引:克隆或安装环境后再启动
+  const noRepo = snap.repo.behind < 0 && !snap.repo.branch
   return (
     <div className="h-full overflow-y-auto px-6 py-8">
       <div className="mx-auto flex max-w-[720px] flex-col gap-4">
@@ -36,6 +38,17 @@ export function Dashboard({
           onJumpLogs={onJumpLogs}
           onRetry={() => onAction(snap.mode === 'dev' ? 'dev' : 'start')}
         />
+        {noRepo && (
+          <div className="rounded-xl border border-amber-500/25 bg-amber-500/[0.05] px-5 py-3.5 animate-slide-down dark:bg-amber-500/[0.08]">
+            <p className="text-sm font-medium text-amber-600 dark:text-amber-400">
+              尚未配置可用的 DeepSeek Harness 仓库
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              请通过左侧「仓库与构建 → 克隆仓库」一键克隆并初始化,或在「工具链」中一键安装缺失环境(Node / Git /
+              pnpm);完成后回到这里点击启动。
+            </p>
+          </div>
+        )}
         <div className="animate-slide-up">
           <ServiceCard
             snap={snap}

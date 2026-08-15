@@ -226,6 +226,8 @@ export interface SettingsSnapshot {
   buildArgs: string
   readyTimeoutMs: number
   startTimeoutMs: number
+  /** 首次运行是否已处理(跳过或完成);true 时不再展示首次运行向导。 */
+  firstRunSkipped: boolean
 }
 
 /** 主题偏好。 */

@@ -39,17 +39,21 @@ pub const TITLEBAR_HEIGHT: f64 = 64.0;
 
 // ── 几何计算(纯函数,可单测) ─────────────────────────────
 
-/// 子 WebView 的目标几何(逻辑坐标):标题栏以下全部区域。
+/// 子 WebView 的目标几何(逻辑坐标):
+/// - 顶部栏可见(默认):标题栏以下全部区域;
+/// - 顶部栏隐藏(全屏 + DeepSeek 工作区自动隐藏 chrome):占满整个窗口,DeepSeek 真全屏。
 /// `inner` 是窗口内区物理尺寸,`scale` 是当前 DPI 缩放因子。
 pub fn dsh_view_geometry(
     inner: PhysicalSize<u32>,
     scale: f64,
+    topbar_hidden: bool,
 ) -> (LogicalPosition<f64>, LogicalSize<f64>) {
     let scale = if scale > 0.0 { scale } else { 1.0 };
     let w = inner.width as f64 / scale;
-    let h = (inner.height as f64 / scale - TITLEBAR_HEIGHT).max(0.0);
+    let top = if topbar_hidden { 0.0 } else { TITLEBAR_HEIGHT };
+    let h = (inner.height as f64 / scale - top).max(0.0);
     (
-        LogicalPosition::new(0.0, TITLEBAR_HEIGHT),
+        LogicalPosition::new(0.0, top),
         LogicalSize::new(w, h),
     )
 }
@@ -179,6 +183,8 @@ pub struct DshViewManager {
     creating: AtomicBool,
     /// 健康观察线程是否在运行。
     watcher_alive: AtomicBool,
+    /// 顶部栏是否隐藏(全屏 + DeepSeek 工作区自动隐藏 chrome;影响子 WebView 几何)。
+    topbar_hidden: AtomicBool,
 }
 
 impl Default for DshViewManager {
@@ -204,7 +210,17 @@ impl DshViewManager {
             pending_enter: AtomicBool::new(false),
             creating: AtomicBool::new(false),
             watcher_alive: AtomicBool::new(false),
+            topbar_hidden: AtomicBool::new(false),
         }
+    }
+
+    /// 顶部栏隐藏状态(renderer 在全屏 + DeepSeek 工作区自动隐藏 chrome 时设置)。
+    pub fn set_topbar_hidden(&self, hidden: bool) {
+        self.topbar_hidden.store(hidden, Ordering::SeqCst);
+    }
+
+    pub fn is_topbar_hidden(&self) -> bool {
+        self.topbar_hidden.load(Ordering::SeqCst)
     }
 
     /// 直接写入状态(不广播;测试与内部流程用)。派生字段由 current_state 计算。
@@ -320,7 +336,7 @@ pub fn create_dsh_view(app: &AppHandle) -> Result<(), String> {
         let inner = window
             .inner_size()
             .map_err(|e| format!("读取主窗口尺寸失败:{e}"))?;
-        let (pos, size) = dsh_view_geometry(inner, scale);
+        let (pos, size) = dsh_view_geometry(inner, scale, mgr.is_topbar_hidden());
 
         let mut builder = WebviewBuilder::new(
             DSH_VIEW_LABEL,
@@ -434,7 +450,7 @@ fn confirm_and_mark_ready(app: &AppHandle) {
     });
 }
 
-/// 窗口尺寸/位置/DPI 变化时重排子 WebView(标题栏以下全部区域)。
+/// 窗口尺寸/位置/DPI 变化时重排子 WebView(标题栏以下全部区域;顶部栏隐藏时全窗)。
 pub fn relayout(app: &AppHandle) {
     let Some(mgr) = app.try_state::<Arc<DshViewManager>>() else {
         return;
@@ -449,11 +465,20 @@ pub fn relayout(app: &AppHandle) {
         return;
     };
     let scale = window.scale_factor().unwrap_or(1.0);
-    let (pos, size) = dsh_view_geometry(inner, scale);
+    let (pos, size) = dsh_view_geometry(inner, scale, mgr.is_topbar_hidden());
     if let Some(v) = mgr.view() {
         let _ = v.set_position(pos);
         let _ = v.set_size(size);
     }
+}
+
+/// 设置顶部栏隐藏状态并重排子 WebView(renderer 全屏自动隐藏 chrome 时调用)。
+pub fn set_topbar_hidden(app: &AppHandle, hidden: bool) {
+    let Some(mgr) = app.try_state::<Arc<DshViewManager>>() else {
+        return;
+    };
+    mgr.set_topbar_hidden(hidden);
+    relayout(app);
 }
 
 // ── 进入 / 返回 / 重试(工作区语义) ──────────────────────
@@ -769,7 +794,7 @@ mod tests {
 
     #[test]
     fn geometry_titlebar_offset_scale_1() {
-        let (pos, size) = dsh_view_geometry(PhysicalSize::new(1000, 700), 1.0);
+        let (pos, size) = dsh_view_geometry(PhysicalSize::new(1000, 700), 1.0, false);
         assert_eq!(pos.x, 0.0);
         assert_eq!(pos.y, TITLEBAR_HEIGHT);
         assert_eq!(size.width, 1000.0);
@@ -779,7 +804,7 @@ mod tests {
     #[test]
     fn geometry_scale_2_keeps_logical_math() {
         // 2x Retina:物理 2000x1400 → 逻辑 1000x700,标题栏 64 逻辑 px。
-        let (pos, size) = dsh_view_geometry(PhysicalSize::new(2000, 1400), 2.0);
+        let (pos, size) = dsh_view_geometry(PhysicalSize::new(2000, 1400), 2.0, false);
         assert_eq!(pos.y, TITLEBAR_HEIGHT);
         assert_eq!(size.width, 1000.0);
         assert_eq!(size.height, 700.0 - TITLEBAR_HEIGHT);
@@ -787,7 +812,7 @@ mod tests {
 
     #[test]
     fn geometry_non_integer_scale_1_25() {
-        let (pos, size) = dsh_view_geometry(PhysicalSize::new(1250, 780), 1.25);
+        let (pos, size) = dsh_view_geometry(PhysicalSize::new(1250, 780), 1.25, false);
         assert_eq!(pos.y, TITLEBAR_HEIGHT);
         assert_eq!(size.width, 1000.0);
         assert_eq!(size.height, 624.0 - TITLEBAR_HEIGHT);
@@ -795,10 +820,33 @@ mod tests {
 
     #[test]
     fn geometry_clamps_negative_height_and_bad_scale() {
-        let (_, size) = dsh_view_geometry(PhysicalSize::new(100, 40), 1.0);
+        let (_, size) = dsh_view_geometry(PhysicalSize::new(100, 40), 1.0, false);
         assert_eq!(size.height, 0.0);
-        let (_, size2) = dsh_view_geometry(PhysicalSize::new(1000, 700), 0.0);
+        let (_, size2) = dsh_view_geometry(PhysicalSize::new(1000, 700), 0.0, false);
         assert_eq!(size2.height, 700.0 - TITLEBAR_HEIGHT);
+    }
+
+    #[test]
+    fn geometry_topbar_hidden_fills_window() {
+        // 顶部栏隐藏(全屏 DeepSeek 工作区):子 WebView 从 y=0 占满整个窗口。
+        let (pos, size) = dsh_view_geometry(PhysicalSize::new(1000, 700), 1.0, true);
+        assert_eq!(pos.y, 0.0);
+        assert_eq!(size.width, 1000.0);
+        assert_eq!(size.height, 700.0);
+        // Retina 2x:物理 2000x1400 → 逻辑 1000x700 全窗。
+        let (pos2, size2) = dsh_view_geometry(PhysicalSize::new(2000, 1400), 2.0, true);
+        assert_eq!(pos2.y, 0.0);
+        assert_eq!(size2.height, 700.0);
+    }
+
+    #[test]
+    fn manager_topbar_hidden_flag() {
+        let mgr = DshViewManager::new();
+        assert!(!mgr.is_topbar_hidden(), "默认顶部栏可见");
+        mgr.set_topbar_hidden(true);
+        assert!(mgr.is_topbar_hidden());
+        mgr.set_topbar_hidden(false);
+        assert!(!mgr.is_topbar_hidden());
     }
 
     #[test]

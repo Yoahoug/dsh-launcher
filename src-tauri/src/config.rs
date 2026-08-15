@@ -97,6 +97,10 @@ pub fn load() -> SettingsSnapshot {
             .and_then(|x| x.as_u64())
             .filter(|n| *n >= 5000)
             .unwrap_or(defaults.start_timeout_ms),
+        first_run_skipped: v
+            .get("firstRunSkipped")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(defaults.first_run_skipped),
     }
 }
 
@@ -142,6 +146,9 @@ pub fn validate_patch(patch: &serde_json::Value) -> Result<SettingsSnapshot, Str
     }
     if let Some(b) = patch.get("autoUpdateCheck").and_then(|x| x.as_bool()) {
         next.auto_update_check = b;
+    }
+    if let Some(b) = patch.get("firstRunSkipped").and_then(|x| x.as_bool()) {
+        next.first_run_skipped = b;
     }
     // autostart 字段兼容读取(桌面版由 preferences 管理,不再通过本文件生效)
     Ok(next)

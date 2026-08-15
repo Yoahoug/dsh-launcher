@@ -10,18 +10,47 @@ import { mockApi } from '@/lib/mock'
 describe('FirstRunPage 流程', () => {
   it('欢迎 → 选择仓库 → 检测环境 → 完成', async () => {
     const user = userEvent.setup()
+    const onDone = vi.fn()
     render(
       <ToastProvider>
-        <FirstRunPage onDone={() => {}} onOpenSettings={() => {}} />
+        <FirstRunPage onDone={onDone} />
       </ToastProvider>,
     )
     expect(screen.getByText(/欢迎使用 DSH Launcher/)).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '开始配置' }))
-    expect(await screen.findByText('仓库位置')).toBeInTheDocument()
+    expect(await screen.findByText('已有仓库位置')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '检测环境' }))
     expect(await screen.findByText(/可用 ✓/)).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '完成,进入主界面' }))
     expect(await screen.findByText('设置已保存')).toBeInTheDocument()
+    expect(onDone).toHaveBeenCalledOnce()
+  })
+
+  it('欢迎页「稍后配置」可跳过(不卡死,直接进入主界面)', async () => {
+    const user = userEvent.setup()
+    const onDone = vi.fn()
+    const complete = vi.spyOn(mockApi, 'completeFirstRun')
+    render(
+      <ToastProvider>
+        <FirstRunPage onDone={onDone} />
+      </ToastProvider>,
+    )
+    await user.click(screen.getByRole('button', { name: '稍后配置' }))
+    expect(complete).toHaveBeenCalledWith(true)
+    expect(onDone).toHaveBeenCalledOnce()
+  })
+
+  it('仓库步骤「跳过(稍后设置)」同样可退出向导', async () => {
+    const user = userEvent.setup()
+    const onDone = vi.fn()
+    render(
+      <ToastProvider>
+        <FirstRunPage onDone={onDone} />
+      </ToastProvider>,
+    )
+    await user.click(screen.getByRole('button', { name: '开始配置' }))
+    await user.click(await screen.findByRole('button', { name: '跳过(稍后设置)' }))
+    expect(onDone).toHaveBeenCalledOnce()
   })
 })
 

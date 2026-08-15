@@ -258,13 +258,43 @@ impl AppState {
 
     pub fn desktop_snapshot(&self) -> DesktopSnapshot {
         let settings = config::load();
-        let first_run_done =
-            !settings.repo_path.is_empty() && config::repo_usable(&settings.repo_path).ok;
+        // 首次运行判定:显式跳过(或完成过引导)即视为已处理;否则需要可用仓库。
+        // 跳过不是死路:启动器主界面仍可克隆仓库/安装环境。
+        let first_run_done = settings.first_run_skipped
+            || (!settings.repo_path.is_empty() && config::repo_usable(&settings.repo_path).ok);
         DesktopSnapshot {
             preferences: self.preferences.lock().unwrap().clone(),
             first_run_done,
             version: env!("CARGO_PKG_VERSION").to_string(),
         }
+    }
+
+    /// 完成/跳过首次运行引导:
+    /// - skip=true 仅标记 firstRunSkipped(不强制要求仓库可用,用户稍后配置);
+    /// - repo_path 提供时一并保存(完成引导路径);
+    /// - 广播 state-changed,让 renderer 的 desktop snapshot 立即刷新,退出向导。
+    pub fn complete_first_run(
+        &self,
+        app: &AppHandle,
+        skip: bool,
+        repo_path: Option<String>,
+    ) -> Result<DesktopSnapshot, String> {
+        let mut map = serde_json::Map::new();
+        map.insert("firstRunSkipped".into(), serde_json::json!(true));
+        if let Some(p) = repo_path {
+            let p = config::expand_path(p.trim());
+            if p.is_empty() {
+                return Err("仓库路径不能为空".into());
+            }
+            map.insert("repoPath".into(), serde_json::json!(p));
+        }
+        config::apply_patch(&serde_json::Value::Object(map))?;
+        let _ = skip; // skip 与完成都标记 firstRunSkipped=true;差异仅在是否保存 repoPath
+        // 刷新仓库快照(完成路径下 repoPath 可能变化)
+        self.refresh_repo();
+        let snap = self.snapshot();
+        let _ = app.emit(EVENT_STATE_CHANGED, &snap);
+        Ok(self.desktop_snapshot())
     }
 
     pub fn save_preferences(
@@ -1544,5 +1574,47 @@ mod tests {
         let s = st.snapshot();
         assert!(s.operation.is_none());
         assert!(s.disabled_actions.is_empty() || !s.busy);
+    }
+
+    #[test]
+    fn first_run_done_requires_usable_repo_or_skipped_flag() {
+        let _g = crate::test_lock::ENV_LOCK.lock().unwrap();
+        let base = std::env::temp_dir().join(format!("dsh-state-fr-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        std::env::set_var("DSH_LAUNCHER_CONFIG_DIR", &base);
+        std::env::set_var("DSH_LAUNCHER_STATE_DIR", base.join("state"));
+        // 强制初始仓库不可用(避免本机默认 ~/Desktop/deepseek-harness 恰好存在)
+        std::fs::write(
+            base.join("dsh-launcher.json"),
+            r#"{"repoPath":"/definitely/not/exists/dsh"}"#,
+        )
+        .unwrap();
+
+        let st = test_state();
+        // 仓库不可用且未跳过 → 首次运行未完成(向导应展示)
+        let snap = st.desktop_snapshot();
+        assert!(
+            !snap.first_run_done,
+            "仓库不可用且未跳过时必须展示首次运行向导"
+        );
+
+        // 跳过(标记 firstRunSkipped)后 → 首次运行完成,不再卡向导
+        let patch = serde_json::json!({ "firstRunSkipped": true });
+        config::apply_patch(&patch).unwrap();
+        let snap2 = st.desktop_snapshot();
+        assert!(snap2.first_run_done, "跳过后必须能进入启动器主界面");
+
+        // 可用仓库本身也视为完成(不依赖跳过标记)
+        std::fs::create_dir_all(base.join("proj/.git")).unwrap();
+        config::apply_patch(&serde_json::json!({
+            "repoPath": base.join("proj").display().to_string(),
+            "firstRunSkipped": false,
+        }))
+        .unwrap();
+        let snap3 = st.desktop_snapshot();
+        assert!(snap3.first_run_done, "可用仓库即视为首次运行完成");
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

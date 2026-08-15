@@ -3,11 +3,14 @@ import { ExternalLink, FolderOpen, ScrollText, Settings } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { useTitleBarDrag } from '@/hooks/use-titlebar-drag'
+import { useTopbarAutohide } from '@/hooks/use-topbar-autohide'
+import { cn } from '@/lib/utils'
 import logoUrl from '@/assets/logo.svg'
 import type { AppSnapshot, DshViewStatus, Workspace } from '@/types/schema'
 
 /** 全局玻璃 header:品牌 + 工作区切换 + 右侧动作图标。
- *  整个标题栏(含中央空白区)可拖动窗口;按钮/链接/输入框不触发拖动。 */
+ *  整个标题栏(含中央空白区)可拖动窗口;按钮/链接/输入框不触发拖动。
+ *  全屏 + DeepSeek 工作区:顶部栏自动收起(悬浮顶部显示),让 DeepSeek 真全屏。 */
 export function TopBar({
   snap,
   workspace,
@@ -30,14 +33,26 @@ export function TopBar({
   const headerRef = useRef<HTMLElement | null>(null)
   // 可靠拖动:pointerdown(主键 + 非交互目标)→ startDragging;双击空白 → 最大化切换
   useTitleBarDrag(headerRef)
+  // 全屏自动隐藏(仅 DeepSeek 工作区);fullscreen 同时用于全屏时左对齐(无红绿灯留白)
+  const { fullscreen, hidden } = useTopbarAutohide(workspace)
 
   return (
     <header
       ref={headerRef}
       data-tauri-drag-region="deep"
-      className="fixed inset-x-0 top-0 z-50 h-16 border-b border-border bg-background/80 backdrop-blur-md"
+      className={cn(
+        'fixed inset-x-0 top-0 z-50 h-16 border-b border-border bg-background/80 backdrop-blur-md',
+        'transition-transform duration-300 ease-out will-change-transform',
+        hidden ? '-translate-y-full' : 'translate-y-0',
+      )}
     >
-      <div className="flex h-full items-center gap-3 pl-[84px] pr-4">
+      <div
+        className={cn(
+          'flex h-full items-center gap-3 pr-4 transition-[padding] duration-300',
+          // 窗口模式留出 macOS 红绿灯;全屏时贴左对齐(与左侧栏/窗口左边对齐,更美观)
+          fullscreen ? 'pl-4' : 'pl-[84px]',
+        )}
+      >
         <div className="flex min-w-0 shrink-0 items-center gap-3">
           <img src={logoUrl} alt="" className="size-8 rounded-lg" />
           <div className="leading-tight">
