@@ -1,0 +1,4 @@
+# Windows 安装包与测试二进制静态链接 MSVC CRT，避免依赖目标机器的
+# Visual C++ Redistributable 版本。
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
