@@ -23,13 +23,15 @@ Tauri 2 原生核心(纯 Rust,无 Node daemon)+ React 控制台 · 一键启动 
 | **托管工具链** | 签名 catalog(全部国内镜像)一键安装 Node 24 LTS / pnpm(Windows 另有托管 MinGit)到托管目录;自动解析 dsh 兼容 Node(`^22.19 \|\| >=24`) |
 | **环境检查** | 仓库可用性、前端 dist 是否已构建、Node 版本是否在 dsh 范围内,逐项给出可执行诊断;**检测结果文件缓存**(24h 内秒开,安装/克隆/设置变更自动失效,「重新检测」强制刷新) |
 | **主窗口 DeepSeek 工作区** | 标题栏可在「启动器 / DeepSeek」间切换；DeepSeek 由同一原生窗口内的零权限子 WebView 承载，不弹独立窗口、不使用 iframe、不跳浏览器 |
+| **插件管理** | 官方插件管理增强版:全部 loader 行卡片化(来源层徽标/启停开关/自动生成配置表单/原始 YAML 高级模式),配置写入 profile 补丁前自动备份 + `--dump-config` 校验,失败自动回滚;运行中的 dsh web 无需重启即热重载;联动 dsh-plugins 仓库一键构建安装/移除 |
+| **技能管理** | 独立管理技能的增删改/导入(`$DSH_HOME/skills`),自动扫描发现本机 Codex / Claude Code / Cursor / OpenCode / Agents 等工具目录的既有技能;「一键启用」把外部根写入 `skill-filesystem.customSkillDirs`,模型侧经 HMR 直接可调用 |
 | **成功后自动进入** | 启动、开发、更新构建或重建只有到达真实成功终态，并通过服务、健康检查、端口持有者和页面就绪校验后才进入 DeepSeek；失败、取消和超时不会提前显示成功 |
 | **会话保持与重连** | 返回启动器仅隐藏子 WebView，再进入时保留登录态、会话和页面状态；服务重启时显示断线状态并自动重连 |
 | **后台常驻与退出** | 关窗默认最小化到托盘,服务不受影响;重启启动器后自动**召回**运行中的 dsh web(进程存活 + 命令行 + 端口三重校验);托盘「退出」= 先停止 dsh 进程树再完全退出,**无残留后台进程** |
 | **托盘 / 单实例** | 托盘动态状态菜单 + 左键召回主窗口;重复启动只召回,不重复起 |
 | **日志** | 实时推送 + 按来源着色;落盘 `~/.local/state/dsh-launcher/logs/` 可回溯 |
 | **自动更新** | Tauri updater(minisign 签名),启动时自动检查或手动检查,下载安装后自动重启 |
-| **设置** | 仓库路径、端口、host、`DSH_HOME`、构建参数透传、超时、开机自启、主题(亮色/深色/跟随系统)、关窗行为 |
+| **设置** | 仓库路径、端口、host、`DSH_HOME`、构建参数透传、超时、开机自启、主题(亮色/深色/跟随系统)、关窗行为、插件与技能(目标 profile / dsh-plugins 路径 / managed 技能根 / 外部技能根) |
 
 > 主 React WebView 只负责原生窗口外壳、标题栏和启动器控制台；DeepSeek 页面仍由本机 `dsh web` 提供，并在标题栏以下的独立零权限子 WebView 中显示。远程页面不获得 Tauri IPC，也不注入本地密钥或状态。
 
@@ -78,7 +80,7 @@ src-tauri/               Tauri 2 原生核心(纯 Rust,无 Node daemon)
   src/contract.rs        前后端共享契约(状态机 / 长任务 / 事件)
   src/clone.rs           克隆与事务性安装(自动建目录 / 进度 / staging 原子提交)
   src/lifecycle.rs       退出语义(托盘退出=停 dsh;关窗=最小化托盘保活)
-  src/services/          进程托管(supervisor)、运行时解析(runtime)、git 同步(repo)、构建(build)
+  src/services/          进程托管(supervisor)、运行时解析(runtime)、git 同步(repo)、构建(build)、dsh CLI(dshctl)、插件组合视图与补丁读写(plugins)、技能扫描与 CRUD(skills)
   src/ops.rs             长任务编排(journal / 取消 / 崩溃恢复)
   src/toolchain.rs       托管工具链(签名 catalog + 国内镜像)
   src/state.rs           状态机与动作协调(环境缓存 / 启动自动构建 / 快照)
@@ -88,7 +90,7 @@ src-tauri/               Tauri 2 原生核心(纯 Rust,无 Node daemon)
   src/log_hub.rs         日志中心(落盘 + 事件广播)
 src-ui/                  React + TypeScript + Vite 控制台
   src/App.tsx            页面路由 + 动作分发
-  src/components/        dashboard / repo / env / logs / settings / first-run
+  src/components/        dashboard / repo / env / plugins / skills / logs / settings / first-run
 .github/workflows/       ci.yml + release.yml(v* tag → win+mac 资产 + 签名 latest.json)
 scripts/                 构建 / 校验脚本
 assets/                  应用图标

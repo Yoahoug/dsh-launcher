@@ -342,8 +342,9 @@ fn resolve_plugins_path(settings: &SettingsSnapshot) -> String {
 }
 
 /// 插件组合视图快照(profiles + 行 + dsh-plugins 包)。
+/// async:内部跑 dump-config(~1-3s),避免阻塞主线程/其它 IPC。
 #[tauri::command]
-pub fn plugins_get_snapshot(
+pub async fn plugins_get_snapshot(
     profile: Option<String>,
     state: State<'_, Arc<AppState>>,
 ) -> Result<crate::contract::PluginsSnapshot, String> {
@@ -370,7 +371,7 @@ fn nonempty_profile(requested: &str, default: &str) -> String {
 
 /// 插件启停(写 profile patch + 备份 + dump-config 校验 + 回滚)。
 #[tauri::command]
-pub fn plugins_set_enabled(
+pub async fn plugins_set_enabled(
     profile: String,
     id: String,
     enabled: bool,
@@ -383,7 +384,7 @@ pub fn plugins_set_enabled(
 
 /// 保存配置:config(整行全量键)或 raw_yaml(原始 YAML 块,含 !!js 行)。
 #[tauri::command]
-pub fn plugins_save_config(
+pub async fn plugins_save_config(
     profile: String,
     id: String,
     config: serde_json::Value,
@@ -404,7 +405,7 @@ pub fn plugins_save_config(
 
 /// 重置行(删除 profile patch 中该 id 条目,回落 bundle/home 默认)。
 #[tauri::command]
-pub fn plugins_reset_row(
+pub async fn plugins_reset_row(
     profile: String,
     id: String,
     state: State<'_, Arc<AppState>>,
@@ -416,18 +417,18 @@ pub fn plugins_reset_row(
 
 /// 仅校验补丁(不写文件)。
 #[tauri::command]
-pub fn plugins_validate_patch(
+pub async fn plugins_validate_patch(
     profile: String,
     state: State<'_, Arc<AppState>>,
-) -> crate::contract::PatchWriteResult {
+) -> Result<crate::contract::PatchWriteResult, String> {
     let (ctx, default_profile) = plugin_write_ctx(&state);
     let profile = nonempty_profile(&profile, &default_profile);
-    crate::services::plugins::validate_patch(&ctx, &profile)
+    Ok(crate::services::plugins::validate_patch(&ctx, &profile))
 }
 
 /// 原始 dump-config 文本(预览补丁效果/校验)。
 #[tauri::command]
-pub fn dshctl_dump_config(
+pub async fn dshctl_dump_config(
     profile: Option<String>,
     state: State<'_, Arc<AppState>>,
 ) -> Result<String, String> {
@@ -776,7 +777,7 @@ pub fn skills_preview(source_path: String) -> Result<String, String> {
 
 /// 一键启用技能根:把外部根写进 profile patch 的 skill-filesystem.customSkillDirs。
 #[tauri::command]
-pub fn skills_enable_root(
+pub async fn skills_enable_root(
     app: AppHandle,
     profile: String,
     root_path: String,
