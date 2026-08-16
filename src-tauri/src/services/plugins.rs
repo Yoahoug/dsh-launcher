@@ -586,13 +586,24 @@ pub(crate) fn extract_config(block: &str, has_js: bool) -> Option<serde_json::Va
 fn classify_layer(label: &str, dsh_home: &Path, profile: &str) -> (PluginLayer, String) {
     let pp = profile_patch_path(dsh_home, profile);
     let hp = home_patch_path(dsh_home);
+    // Windows:路径分隔符不敏感比较(Node 的 dump 输出可能混用正/反斜杠)
+    let norm = |s: &str| -> String {
+        if cfg!(windows) {
+            s.replace('\\', "/")
+        } else {
+            s.to_string()
+        }
+    };
     if label.contains("cordis.patch.yml") {
         // label 形如 "…/cordis.patch.yml" 或 "bundle, patched by …/cordis.patch.yml"
         let last = label.rsplit(',').next().unwrap_or(label).trim();
-        let last_p = Path::new(last);
-        if last_p == pp.as_path() || label.contains(&pp.to_string_lossy().to_string()) {
+        let last_norm = norm(last);
+        let pp_norm = norm(&pp.to_string_lossy());
+        let hp_norm = norm(&hp.to_string_lossy());
+        let label_norm = norm(label);
+        if last_norm == pp_norm || label_norm.contains(&pp_norm) {
             (PluginLayer::ProfilePatch, last.to_string())
-        } else if last_p == hp.as_path() || label.contains(&hp.to_string_lossy().to_string()) {
+        } else if last_norm == hp_norm || label_norm.contains(&hp_norm) {
             (PluginLayer::HomePatch, last.to_string())
         } else {
             (PluginLayer::Overlay, last.to_string())
