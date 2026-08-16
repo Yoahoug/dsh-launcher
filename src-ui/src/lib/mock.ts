@@ -18,7 +18,7 @@ import type {
 import type { DesktopApi } from '@/lib/desktop-api'
 import { EVENTS } from '@/types/schema'
 
-const VERSION = '0.6.0'
+const VERSION = '0.7.0'
 
 const baseRepo = {
   branch: 'main',

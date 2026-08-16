@@ -1,6 +1,6 @@
 {
   "name": "dsh-launcher",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
   "description": "DSH Launcher — DeepSeek Harness 启动器桌面版(Tauri 原生核心)",
