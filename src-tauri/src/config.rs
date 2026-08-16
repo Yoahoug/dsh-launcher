@@ -68,7 +68,7 @@ pub fn app_data_dir() -> PathBuf {
         if let Ok(d) = std::env::var("LOCALAPPDATA") {
             return PathBuf::from(d).join("dsh-launcher");
         }
-        return Path::new(&home_dir()).join(".local/state/dsh-launcher");
+        Path::new(&home_dir()).join(".local/state/dsh-launcher")
     }
     #[cfg(target_os = "macos")]
     {
