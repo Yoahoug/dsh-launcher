@@ -1,103 +1,264 @@
 <div align="center">
 
-# ⚡ dsh-launcher
+<img src="./assets/logo.svg" width="96" alt="DSH Launcher logo" />
 
-**为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)(dsh)开发者打造的桌面启动器**
+# DSH Launcher
 
-Tauri 2 原生核心(纯 Rust,无 Node daemon)+ React 控制台 · 一键启动 / 构建 / 更新 dsh web · 后台常驻与托盘
+**让 DeepSeek Harness 从“能跑”变成“随时可用”。**
+
+一个为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 打造的原生桌面启动器：
+把仓库、工具链、构建、服务、插件、技能和日志，收进一个清爽的工作台。
+
+<p>
+  <a href="https://github.com/Yoahoug/dsh-launcher/releases"><img src="https://img.shields.io/github/v/release/Yoahoug/dsh-launcher?display_name=tag&style=flat-square" alt="Release" /></a>
+  <a href="https://github.com/Yoahoug/dsh-launcher/actions"><img src="https://img.shields.io/github/actions/workflow/status/Yoahoug/dsh-launcher/ci.yml?branch=main&style=flat-square&label=CI" alt="CI" /></a>
+  <a href="https://github.com/Yoahoug/dsh-launcher/blob/main/LICENSE"><img src="https://img.shields.io/github/license/Yoahoug/dsh-launcher?style=flat-square" alt="License" /></a>
+  <img src="https://img.shields.io/badge/Tauri-2-24C8DB?style=flat-square&logo=tauri&logoColor=white" alt="Tauri 2" />
+  <img src="https://img.shields.io/badge/Rust-native-000000?style=flat-square&logo=rust&logoColor=white" alt="Rust native" />
+</p>
+
+[下载最新版本](https://github.com/Yoahoug/dsh-launcher/releases) · [提交 Issue](https://github.com/Yoahoug/dsh-launcher/issues) · [查看开发计划](./docs/development-plan.md)
 
 </div>
 
 ---
 
-## ✨ 功能
+## 它解决什么问题？
 
-| 操作 | 说明 |
-|---|---|
-| **首次运行向导** | 检测不到有效仓库时进入全屏引导:填写已有仓库路径,或一键克隆 `deepseek-harness` |
-| **克隆仓库** | git clone 语义:选择「放置位置」(桌面等非空目录也行),自动生成 `<位置>/deepseek-harness`;克隆各阶段带进度条,失败/取消只清理本次 staging,**绝不覆盖已有目录** |
-| **启动** | 源码启动 dsh web(优先 node 直连仓库声明的 dsh 入口,Windows 上单进程、无多余 cmd/conhost);启动前若缺少构建产物(web dist / 客户端 bundle)会自动先构建;就绪行(`dsh web: http://…`)命中后自动打开主界面 |
-| **开发模式** | 同跑 `dsh web` + `pnpm run dev:web`(HMR);前端改动免刷新热更 |
-| **更新并构建** | `git pull --rebase --autostash`(冲突**只报告、绝不 reset --hard**)→ lockfile 变化才 `pnpm install` → 构建 → 重启服务 |
-| **重建并重启 / 停止** | 进程组停止(SIGTERM → 5s → SIGKILL;Windows 为 CTRL_BREAK → Job Object),零残留;危险动作有确认弹窗 |
-| **托管工具链** | 签名 catalog(全部国内镜像)一键安装 Node 24 LTS / pnpm(Windows 另有托管 MinGit)到托管目录;自动解析 dsh 兼容 Node(`^22.19 \|\| >=24`) |
-| **环境检查** | 仓库可用性、前端 dist 是否已构建、Node 版本是否在 dsh 范围内,逐项给出可执行诊断;**检测结果文件缓存**(24h 内秒开,安装/克隆/设置变更自动失效,「重新检测」强制刷新) |
-| **主窗口 DeepSeek 工作区** | 标题栏可在「启动器 / DeepSeek」间切换；DeepSeek 由同一原生窗口内的零权限子 WebView 承载，不弹独立窗口、不使用 iframe、不跳浏览器 |
-| **插件管理** | 官方插件管理增强版:全部 loader 行卡片化(来源层徽标/启停开关/自动生成配置表单/原始 YAML 高级模式),配置写入 profile 补丁前自动备份 + `--dump-config` 校验,失败自动回滚;运行中的 dsh web 无需重启即热重载;联动 dsh-plugins 仓库一键构建安装/移除 |
-| **技能管理** | 独立管理技能的增删改/导入(`$DSH_HOME/skills`),自动扫描发现本机 Codex / Claude Code / Cursor / OpenCode / Agents 等工具目录的既有技能;「一键启用」把外部根写入 `skill-filesystem.customSkillDirs`,模型侧经 HMR 直接可调用 |
-| **成功后自动进入** | 启动、开发、更新构建或重建只有到达真实成功终态，并通过服务、健康检查、端口持有者和页面就绪校验后才进入 DeepSeek；失败、取消和超时不会提前显示成功 |
-| **会话保持与重连** | 返回启动器仅隐藏子 WebView，再进入时保留登录态、会话和页面状态；服务重启时显示断线状态并自动重连 |
-| **后台常驻与退出** | 关窗默认最小化到托盘,服务不受影响;重启启动器后自动**召回**运行中的 dsh web(进程存活 + 命令行 + 端口三重校验);托盘「退出」= 先停止 dsh 进程树再完全退出,**无残留后台进程** |
-| **托盘 / 单实例** | 托盘动态状态菜单 + 左键召回主窗口;重复启动只召回,不重复起 |
-| **日志** | 实时推送 + 按来源着色;落盘 `~/.local/state/dsh-launcher/logs/` 可回溯 |
-| **自动更新** | Tauri updater(minisign 签名),启动时自动检查或手动检查,下载安装后自动重启 |
-| **设置** | 仓库路径、端口、host、`DSH_HOME`、构建参数透传、超时、开机自启、主题(亮色/深色/跟随系统)、关窗行为、插件与技能(目标 profile / dsh-plugins 路径 / managed 技能根 / 外部技能根) |
+DeepSeek Harness 很强，但源码项目的日常使用往往不止是执行一次 `pnpm run build`：要记住仓库在哪里、Node 版本是否匹配、依赖有没有更新、服务是否真的启动、插件配置有没有写坏，以及退出后有没有留下后台进程。
 
-> 主 React WebView 只负责原生窗口外壳、标题栏和启动器控制台；DeepSeek 页面仍由本机 `dsh web` 提供，并在标题栏以下的独立零权限子 WebView 中显示。远程页面不获得 Tauri IPC，也不注入本地密钥或状态。
+DSH Launcher 把这些琐碎但重要的步骤串成一条清晰的路径：
 
-## 🚀 快速开始
+> **选好仓库 → 检查环境 → 启动或开发 → 直接进入 DeepSeek → 需要时更新、构建、回滚和查看日志。**
 
-### 方式一:下载安装包(推荐,支持自动更新)
+它不是另一个 Node daemon，也不接管 DeepSeek Harness 的业务逻辑。Launcher 负责桌面体验和生命周期管理，`dsh web` 仍然运行在你的本机、使用你自己的仓库与配置。
 
-从 [Releases](https://github.com/Yoahoug/dsh-launcher/releases) 下载:
+## 你会得到什么
 
-- **macOS(Apple Silicon)**:`dsh-launcher_<版本>_aarch64.dmg` → 打开后把 `dsh-launcher.app` 拖入「应用程序」
-- **Windows 10/11 x64**:`dsh-launcher_<版本>_x64-setup.exe`(currentUser 安装,默认无需管理员;Windows 10/11 自带 WebView2 运行时,系统确实缺失时才联网补齐)
+| 场景 | Launcher 会帮你做什么 |
+| --- | --- |
+| 第一次使用 | 没有可用仓库时进入引导；可以选择已有目录，也可以直接克隆 DeepSeek Harness |
+| 日常启动 | 自动判断是否需要构建，等待服务真正就绪后再进入 DeepSeek 工作区 |
+| 本地开发 | 一键启动 dsh web 与前端 HMR，修改源码后无需反复手动刷新 |
+| 代码更新 | `git pull --rebase --autostash`，仅在 lockfile 变化时安装依赖，再构建并重启 |
+| 环境不完整 | 检查 Node、pnpm、Git、仓库和构建产物；缺什么可以在工具链页面处理 |
+| 插件配置 | 查看插件来源层，使用表单或原始 YAML 修改，保存前备份，校验失败自动回滚 |
+| 技能管理 | 新建、编辑、导入技能；扫描 Codex、Claude Code、Cursor、OpenCode、Agents 等外部技能目录 |
+| 长期运行 | 关闭窗口可缩到托盘，重启 Launcher 可召回仍在运行的 dsh web，重复启动不会重复拉起服务 |
+| 出问题时 | 实时日志、阶段状态、健康检查和可读诊断都集中在应用内 |
 
-> 需要系统已安装 Node.js(`^22.19 || >=24`,dsh 开发本来就有的环境);没有时可在应用内「环境 → 安装托管 Node 24 LTS」一键安装。未配置开发者签名时系统会提示未知开发者:macOS 右键 → 打开,Windows 点「更多信息 → 仍要运行」。
+## 界面预览
 
-**Windows 绿色版(免安装,自测用)**:`dsh-launcher_<版本>_win-x64-portable.zip` 解压后双击
-`dsh-launcher.exe` 即可运行(`WebView2Loader.dll` 必须与 exe 同目录;Windows 10/11 自带 WebView2
-运行时,无需额外安装)。绿色版为本地/CI 构建的测试产物,不内置自动更新,正式使用请装 NSIS 安装包。
+启动器首页把当前服务状态、启动方式和下一步操作放在同一张卡片里；左侧导航则把仓库、工具链、插件、技能、日志和设置分开，避免把复杂配置堆在启动按钮旁边。
 
-### 方式二:源码运行(开发者,适合改启动器本身)
+<p align="center">
+  <img src="./docs/images/dashboard-preview.jpg" width="960" alt="DSH Launcher 服务首页预览" />
+</p>
 
-```sh
+<p align="center"><sub>服务首页 · 浏览器预览使用 mock 数据，桌面版会连接真实 Rust 核心。</sub></p>
+
+<p align="center">
+  <img src="./docs/images/repo-preview.jpg" width="46%" alt="DSH Launcher 仓库与构建页面预览" />
+  <img src="./docs/images/plugins-preview.jpg" width="46%" alt="DSH Launcher 插件页面预览" />
+</p>
+
+<p align="center"><sub>仓库与构建 · 插件管理</sub></p>
+
+### 一个窗口里的两个工作区
+
+启动器和 DeepSeek 工作区共用同一个原生窗口。切换到 DeepSeek 后，页面由独立的零权限子 WebView 承载，不使用 iframe，也不会把 Tauri IPC、桌面密钥或本地状态暴露给页面。
+
+返回启动器只是隐藏工作区，不会销毁页面，因此登录状态、会话和页面位置都能保留；服务重启后，工作区会显示断线状态并自动尝试重连。
+
+## 快速开始
+
+### 方式一：下载桌面版
+
+从 [Releases](https://github.com/Yoahoug/dsh-launcher/releases) 下载对应平台的安装包：
+
+- **macOS Apple Silicon**：下载 `dsh-launcher_<版本>_aarch64.dmg`，打开后将应用拖入“应用程序”。
+- **Windows 10/11 x64**：下载 `dsh-launcher_<版本>_x64-setup.exe`。默认按当前用户安装，不需要管理员权限。
+- **Windows 绿色版**：解压 `win-x64-portable.zip` 后运行 `dsh-launcher.exe`，适合测试和临时使用。
+
+首次启动如果没有找到合适的 Node.js，打开「工具链」即可安装 Launcher 托管的 Node 24 LTS 与 pnpm。dsh 当前要求 Node `^22.19.0 || >=24.0.0`。
+
+未配置开发者签名时，系统可能提示“未知开发者”：
+
+- macOS：在 Finder 中右键应用，选择“打开”。
+- Windows：点击“更多信息” → “仍要运行”。
+
+### 方式二：从源码运行
+
+#### 1. 准备环境
+
+- Node.js `^22.19.0 || >=24.0.0`
+- pnpm `11.x`
+- Rust stable、`rustup`
+- Git
+
+Node 和 pnpm 用于前端与 DeepSeek Harness 工程；Rust 工具链用于编译 Tauri 桌面核心。
+
+#### 2. 安装并启动桌面开发版
+
+```bash
 git clone https://github.com/Yoahoug/dsh-launcher.git
 cd dsh-launcher
 pnpm install
-pnpm dev:desktop   # tauri dev:起 Rust 原生核心 + React 渲染器
+pnpm dev:desktop
 ```
 
-仓库内置 `.npmrc`，会将依赖下载切换到 `registry.npmmirror.com`，并对网络重置自动重试；全新 Windows 环境无需额外修改全局 npm 配置。
+`pnpm dev:desktop` 会同时启动 Vite 渲染器和 Tauri 原生核心。应用窗口打开后，按首次运行向导选择或克隆 DeepSeek Harness 仓库即可。
 
-需要本机具备 Rust 工具链(rustup)与 Node `^22.19 || >=24`。其他常用命令:`pnpm test:ui`(前端测试)、`pnpm typecheck`、`pnpm build:desktop`(打安装包)。
-在 macOS 上交叉编译 Windows 包:`rustup target add x86_64-pc-windows-gnu`(需 Homebrew `mingw-w64`)后
-`pnpm tauri build --target x86_64-pc-windows-gnu --bundles nsis`。
+仓库内置 `.npmrc`，默认使用 `registry.npmmirror.com` 并对网络重置自动重试；如果你的网络环境已经配置了其他 registry，也可以按本机习惯调整。
 
-## 🔄 自动更新
+#### 3. 只预览前端界面
 
-打包安装的版本**内置自动更新**:启动时自动检查(可在设置中关闭),或点「设置 → 更新 → 立即检查更新」,查询 GitHub Releases:
+如果当前只想查看 React 界面，不需要编译 Rust 桌面壳：
 
-- 新版本经 **minisign 签名校验**后下载安装,完成后启动器自动重启;
-- 正在运行的 dsh web 服务不受影响——新实例启动后直接**召回**接管;
-- 源码运行时请用「更新并构建」拉取 dsh 代码,不走应用自更新。
-
-## 🗂️ 结构
-
-```
-src-tauri/               Tauri 2 原生核心(纯 Rust,无 Node daemon)
-  src/lib.rs             应用入口:插件、命令注册、启动 / 召回 / 迁移流程
-  src/commands.rs        IPC 命令(run_action / get_logs / check_for_update / …)
-  src/contract.rs        前后端共享契约(状态机 / 长任务 / 事件)
-  src/clone.rs           克隆与事务性安装(自动建目录 / 进度 / staging 原子提交)
-  src/lifecycle.rs       退出语义(托盘退出=停 dsh;关窗=最小化托盘保活)
-  src/services/          进程托管(supervisor)、运行时解析(runtime)、git 同步(repo)、构建(build)、dsh CLI(dshctl)、插件组合视图与补丁读写(plugins)、技能扫描与 CRUD(skills)
-  src/ops.rs             长任务编排(journal / 取消 / 崩溃恢复)
-  src/toolchain.rs       托管工具链(签名 catalog + 国内镜像)
-  src/state.rs           状态机与动作协调(环境缓存 / 启动自动构建 / 快照)
-  src/dsh_view.rs        主窗口内 DeepSeek 子 WebView(零权限、状态机、重连与布局)
-  src/chat.rs            旧独立 WebView 回退路径(普通 UI/托盘不再调用)
-  src/tray.rs            托盘(动态状态菜单 + 召回)
-  src/log_hub.rs         日志中心(落盘 + 事件广播)
-src-ui/                  React + TypeScript + Vite 控制台
-  src/App.tsx            页面路由 + 动作分发
-  src/components/        dashboard / repo / env / plugins / skills / logs / settings / first-run
-.github/workflows/       ci.yml + release.yml(v* tag → win+mac 资产 + 签名 latest.json)
-scripts/                 构建 / 校验脚本
-assets/                  应用图标
+```bash
+pnpm dev:renderer
 ```
 
-## 📄 License
+然后打开 [http://localhost:1420](http://localhost:1420)。浏览器预览会使用内置 mock 数据，适合查看页面布局、主题和交互；真正的仓库操作、进程托管、托盘和子 WebView 需要通过 Tauri 桌面版运行。
 
-[MIT](LICENSE)
+## 第一次启动怎么走
+
+1. 在「仓库与构建」中选择已有的 DeepSeek Harness git 仓库，或点击「克隆仓库」。
+2. 在「工具链」查看 Node、pnpm、Git、仓库和构建产物是否正常。
+3. 回到「服务」，选择普通启动或开发模式。
+4. Launcher 会在必要时自动构建，并依次确认进程、端口、健康检查和页面就绪状态。
+5. 只有所有检查通过后才会进入 DeepSeek 工作区；失败、取消和超时不会被误报成成功。
+
+克隆时选择的是“放置位置”，Launcher 会在该目录下创建仓库目录。目标目录已有内容时不会覆盖；克隆失败或取消只清理本次 staging 内容。
+
+## 功能地图
+
+### 服务
+
+- 普通启动：运行本地 `dsh web`。
+- 开发模式：同时运行 `dsh web` 与 `pnpm run dev:web`，支持 HMR。
+- 重建并重启：停止旧服务、重新构建，再通过就绪检查后进入工作区。
+- 停止服务：按进程组停止，必要时再强制结束，避免残留子进程。
+
+### 仓库与构建
+
+- 显示当前分支、HEAD、领先/落后提交数和最近同步状态。
+- 支持克隆、更新并构建、重建并重启。
+- 更新采用 `git pull --rebase --autostash`；遇到冲突只报告，不执行 `reset --hard`。
+- lockfile 未变化时不会无意义地重新安装依赖。
+
+### 工具链
+
+- 检查当前实际生效的 Node、pnpm、Git 版本、来源和路径。
+- 自动判断 dsh 的 Node 版本约束。
+- 可选安装托管 Node 24 LTS、pnpm；Windows 还支持托管 MinGit。
+- 托管组件下载后进行长度与 SHA-256 校验，安装在应用数据目录的版本化路径，不修改系统 PATH、全局 npm 或 Git 配置。
+
+### 插件与技能
+
+- 插件按组合包、profile patch、home patch、overlay 等来源层展示。
+- 支持启停、表单化配置和原始 YAML 高级编辑。
+- 写入插件配置前自动备份，随后运行 `dsh --profile <profile> --dump-config` 校验；失败自动回滚。
+- 可联动本地或 GitHub 上的 `dsh-plugins` 仓库，构建、安装和移除插件包。
+- 技能支持创建、修改、删除、导入和正文预览。
+- 自动发现常见 AI 工具的技能目录；“一键启用”会把外部技能根接入 `skill-filesystem.customSkillDirs`，运行中的 dsh 可通过 HMR 感知变化。
+
+### 托盘、日志与更新
+
+- 关闭窗口默认隐藏到托盘，dsh web 继续运行。
+- 托盘菜单展示当前状态；点击图标可召回窗口。
+- 重启 Launcher 时会通过进程存活、命令行和端口三重校验召回现有服务。
+- 托盘退出会先停止 dsh 进程树，再退出 Launcher。
+- 日志实时推送、按来源区分，并落盘到本地状态目录。
+- 安装版支持基于 minisign 签名的 Tauri updater，可在「设置 → 更新」手动检查，也可以启动时自动检查。
+
+## 常用命令
+
+| 命令 | 用途 |
+| --- | --- |
+| `pnpm dev:desktop` | 启动 Tauri 桌面开发版 |
+| `pnpm dev:renderer` | 只启动 Vite 前端预览 |
+| `pnpm build:renderer` | 构建 React 渲染器 |
+| `pnpm typecheck` | TypeScript 类型检查 |
+| `pnpm test:ui` | 运行 UI 单元测试 |
+| `pnpm build:desktop` | 构建桌面安装包 |
+| `node scripts/verify-desktop.mjs` | 串行执行前端、Rust 与桌面构建门禁 |
+
+Rust 侧也可以单独执行：
+
+```bash
+cd src-tauri
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+```
+
+## 项目结构
+
+```text
+.
+├── src-ui/                  React + TypeScript + Vite 控制台
+│   └── src/components/      服务、仓库、工具链、插件、技能、日志、设置等页面
+├── src-tauri/               Tauri 2 原生核心
+│   ├── src/commands.rs      前端 IPC 命令
+│   ├── src/contract.rs      前后端共享状态与事件契约
+│   ├── src/state.rs         状态机与长任务协调
+│   ├── src/services/        仓库、构建、运行时、进程、插件、技能服务
+│   ├── src/dsh_view.rs      DeepSeek 工作区子 WebView
+│   └── resources/           签名 runtime catalog
+├── scripts/                 构建和验证脚本
+├── docs/                    开发计划与运行记录
+└── assets/                  应用图标与品牌资源
+```
+
+整体分工很简单：React 负责界面，Rust 负责所有需要桌面权限和生命周期保证的事情，DeepSeek Harness 仍由本机自己的 Node 进程提供服务。
+
+## 数据、配置与日志位置
+
+| 内容 | 默认路径 |
+| --- | --- |
+| 引擎设置 | `~/.config/dsh-launcher.json` |
+| 运行态、缓存与 PID | `~/.local/state/dsh-launcher/` |
+| 日志 | `~/.local/state/dsh-launcher/logs/` |
+| DSH_HOME | 默认跟随 dsh；也可在设置中指定 |
+
+测试或隔离运行时，可以通过 `DSH_LAUNCHER_CONFIG_DIR` 和 `DSH_LAUNCHER_STATE_DIR` 将配置、缓存和日志切到临时目录。
+
+## 设计上的几个坚持
+
+- **先确认真实成功，再给用户成功反馈**：任务“已受理”不等于服务“已就绪”。
+- **更新可恢复**：保留 autostash，不用危险的强制 reset 覆盖用户改动。
+- **失败要能回到原状**：插件写入前备份，校验失败自动回滚。
+- **桌面边界清楚**：远程或嵌入页面不拥有 Tauri IPC，不读取本地密钥。
+- **少打扰系统**：托管工具链使用应用自己的目录，默认不改全局环境，也不要求管理员权限。
+
+## 参与开发
+
+欢迎提交 Issue、改进文档或发起 Pull Request。建议在提交前至少运行：
+
+```bash
+pnpm typecheck
+pnpm test:ui
+pnpm build:renderer
+cd src-tauri && cargo fmt --check && cargo test
+```
+
+涉及启动、停止、更新、插件写入或技能路径的改动，请同时补充对应的回归测试，并在 PR 中写清楚验证环境和平台差异。
+
+## 常见问题
+
+### 已安装 Rust，但提示 `cargo: command not found`
+
+这通常是 Rust 已经通过 rustup 安装，但当前终端还没有加载 cargo 的路径。执行：
+
+```bash
+source "$HOME/.cargo/env"
+cargo --version
+pnpm dev:desktop
+```
+
+如果希望每次打开终端都自动生效，可以把 `source "$HOME/.cargo/env"` 放进 `~/.zprofile` 或 `~/.zshrc`。本项目的桌面开发命令本身不要求重新安装 Rust。
+
+## License
+
+[MIT](./LICENSE)
