@@ -420,12 +420,14 @@ function PackagesPanel({
   snap,
   profile,
   pluginsPath,
+  onInstallAll,
   onInstalled,
   onRemoved,
 }: {
   snap: PluginsSnapshot
   profile: string
   pluginsPath: string
+  onInstallAll: () => void
   onInstalled: () => void
   onRemoved: () => void
 }) {
@@ -488,10 +490,20 @@ function PackagesPanel({
           </button>
         ) : null}
       </div>
+      <div className="border-b border-border/70 px-3 py-2">
+        <Button size="sm" className="w-full" onClick={onInstallAll}>
+          <RefreshCw /> {pluginsPath ? '同步并安装' : '从 GitHub 拉取并安装'}
+        </Button>
+      </div>
       <div className="flex-1 space-y-2 overflow-y-auto p-3">
         {!pluginsPath && (
           <p className="rounded-lg border border-dashed border-border p-3 text-xs text-muted-foreground">
-            未配置 dsh-plugins 路径(设置「插件与技能」可填)。自动探测 profile deps 的 file: 链接未命中。
+            当前尚未命中本地仓库路径；点击上方按钮会从 GitHub 拉取到默认目录，也可以在设置「插件与技能」中填写仓库根。
+          </p>
+        )}
+        {pluginsPath && (
+          <p className="rounded-lg bg-muted/50 px-2.5 py-2 text-[10px] text-muted-foreground" title={pluginsPath}>
+            生效仓库: <span className="font-mono">{pluginsPath}</span>
           </p>
         )}
         {snap.packages.length === 0 && pluginsPath && (
@@ -611,6 +623,11 @@ export function PluginsPage() {
         if (op.kind === 'plugin_install' || op.kind === 'plugin_remove') {
           void load()
           toast({ kind: 'success', title: op.kind === 'plugin_install' ? '插件安装完成' : '插件移除完成' })
+          if (op.kind === 'plugin_install' && s.state === 'running' && window.confirm('插件已安装。当前运行中的 dsh 会先尝试热重载，是否现在完整重启 dsh 以确保新插件生效？')) {
+            void api.runAction('rebuild').then((r) => {
+              if (!r.ok) toast({ kind: 'warning', title: '重启未受理', detail: r.reason })
+            }).catch((e) => toast({ kind: 'warning', title: '重启失败', detail: String(e) }))
+          }
         }
       }
       lastOp.current = op
@@ -650,6 +667,21 @@ export function PluginsPage() {
   )
 
   const pluginsPath = settings?.dshPluginsPath ?? ''
+  const effectivePluginsPath = snap?.pluginsPath ?? pluginsPath
+
+  const installAll = React.useCallback(() => {
+    if (!profile) {
+      toast({ kind: 'warning', title: '请先选择 profile' })
+      return
+    }
+    void api.pluginsInstallAll(profile).then((r) => {
+      if (r.ok) {
+        toast({ kind: 'info', title: '仓库安装已受理', detail: '将同步 dsh-plugins 并依次安装全部插件。' })
+      } else {
+        toast({ kind: 'error', title: '仓库安装失败', detail: r.reason })
+      }
+    }).catch((e) => toast({ kind: 'error', title: '仓库安装失败', detail: String(e) }))
+  }, [profile, toast])
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -746,7 +778,8 @@ export function PluginsPage() {
           <PackagesPanel
             snap={snap}
             profile={profile}
-            pluginsPath={pluginsPath}
+            pluginsPath={effectivePluginsPath}
+            onInstallAll={installAll}
             onInstalled={onMutated}
             onRemoved={onMutated}
           />

@@ -154,6 +154,10 @@ describe('技能注入控制(已启动/外部发现两子界面)', () => {
     // 已启动清单(来自 mock active):tavily-extract 与 win-host
     expect(await screen.findByText('tavily-extract')).toBeInTheDocument()
     expect(screen.getByText('win-host')).toBeInTheDocument()
+    expect(screen.getAllByText('系统自带').length).toBeGreaterThanOrEqual(2)
+    expect(screen.getAllByText('外部发现').length).toBeGreaterThanOrEqual(2)
+    expect(screen.getByText('my-skill')).toBeInTheDocument()
+    expect(screen.queryByRole('switch', { name: /my-skill/ })).not.toBeInTheDocument()
     expect(screen.getAllByText('已启动').length).toBeGreaterThanOrEqual(2)
     expect(screen.getByText(/注入控制已启用/)).toBeInTheDocument()
     // 关闭 win-host 注入
@@ -172,7 +176,8 @@ describe('技能注入控制(已启动/外部发现两子界面)', () => {
     await goDiscover(user)
     // 去重:active 里的 tavily-extract → 已注入;其余 → 未注入
     expect(await screen.findByText('已注入 ✓')).toBeInTheDocument()
-    expect(screen.getAllByText('未注入').length).toBeGreaterThanOrEqual(2)
+    // 系统自带技能不再显示外部注入开关;外部技能未注入时开关必须同步为关闭。
+    expect(screen.getAllByText('未注入').length).toBeGreaterThanOrEqual(1)
     // 外部技能卡片带注入开关(默认开),关闭调用 skillsSetInjected
     const sw = screen.getByRole('switch', { name: '注入 tavily-extract' })
     expect(sw).toHaveAttribute('aria-checked', 'true')

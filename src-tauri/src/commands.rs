@@ -8,6 +8,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::state::AppState;
 use std::sync::Arc;
 
+const DSH_PLUGINS_REPO_URL: &str = "https://github.com/Yoahoug/dsh-plugins.git";
+
 /// 快照:状态机全量(M1 mock → M2 bridge)。
 #[tauri::command]
 pub fn get_app_snapshot(state: State<'_, Arc<AppState>>) -> AppSnapshot {
@@ -71,6 +73,11 @@ pub async fn apply_update(
     state: State<'_, Arc<AppState>>,
 ) -> Result<ActionAccepted, String> {
     Ok(state.apply_update(&app).await)
+}
+
+#[tauri::command]
+pub fn restart_app(app: AppHandle, state: State<'_, Arc<AppState>>) {
+    state.restart_app(&app);
 }
 
 /// 桌面信息:偏好 + 首次运行状态。
@@ -338,7 +345,7 @@ fn resolve_plugins_path(settings: &SettingsSnapshot) -> String {
     }
     let home = crate::services::plugins::dsh_home_dir(&settings.dsh_home);
     let profiles = crate::services::plugins::profiles(&home);
-    crate::services::plugins::detect_plugins_path(&profiles).unwrap_or_default()
+    crate::services::plugins::detect_plugins_path_from_home(&profiles, &home).unwrap_or_default()
 }
 
 /// 插件组合视图快照(profiles + 行 + dsh-plugins 包)。
@@ -611,6 +618,142 @@ fn install_package_flow(
         token,
     )
     .map_err(crate::ops::OperationError::Failed)
+}
+
+/// 同步本地 dsh-plugins 仓库,必要时从 GitHub 克隆,然后安装全部 packages/*。
+#[tauri::command]
+pub fn plugins_install_all(
+    app: AppHandle,
+    profile: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<ActionAccepted, String> {
+    let state = state.inner().clone();
+    let settings = crate::config::load();
+    let tools = state.tools.lock().unwrap().clone();
+    let (id, token) = state.ops.begin(
+        crate::contract::OperationKind::PluginInstall,
+        true,
+        "准备同步 dsh-plugins…",
+    )?;
+    state.set_snapshot(&app, |_| {});
+    let app2 = app.clone();
+    let state2 = state.clone();
+    std::thread::spawn(move || {
+        let result = install_all_plugins_flow(&state2, &profile, &settings, &tools, &token);
+        finish_plugin_op(&state2, &app2, id, result);
+    });
+    Ok(ActionAccepted {
+        ok: true,
+        reason: None,
+        aborted: None,
+        already: None,
+    })
+}
+
+fn install_all_plugins_flow(
+    state: &Arc<AppState>,
+    profile: &str,
+    settings: &SettingsSnapshot,
+    tools: &crate::services::runtime::Tools,
+    token: &crate::ops::CancellationToken,
+) -> Result<(), crate::ops::OperationError> {
+    token.check()?;
+    let home = crate::services::plugins::dsh_home_dir(&settings.dsh_home);
+    let profiles = crate::services::plugins::profiles(&home);
+    let detected = crate::services::plugins::detect_plugins_path_from_home(&profiles, &home);
+    let root = if !settings.dsh_plugins_path.is_empty() {
+        std::path::PathBuf::from(&settings.dsh_plugins_path)
+    } else if let Some(path) = detected {
+        std::path::PathBuf::from(path)
+    } else {
+        home.join("dsh-plugins")
+    };
+    let git = tools.git.clone().ok_or_else(|| {
+        crate::ops::OperationError::Failed("未找到 git,无法拉取 dsh-plugins".into())
+    })?;
+    let cancel = token.arc_flag();
+    let mut git_env = tools.env();
+    git_env.insert("GIT_TERMINAL_PROMPT".into(), "0".into());
+    git_env.insert("GIT_CONFIG_NOSYSTEM".into(), "1".into());
+    let parent = root.parent().unwrap_or_else(|| std::path::Path::new("."));
+    std::fs::create_dir_all(parent)
+        .map_err(|e| crate::ops::OperationError::Failed(format!("创建插件仓库父目录失败:{e}")))?;
+
+    state.ops.set_stage(
+        state.ops.current().map(|o| o.operation_id).unwrap_or(0),
+        "同步 dsh-plugins 仓库…",
+        Some(10),
+    );
+    let (code, tail) = if root.join(".git").is_dir() {
+        let root_s = root.to_string_lossy().to_string();
+        crate::clone::run_cancellable(
+            &state.log_hub,
+            "git pull dsh-plugins",
+            &git,
+            &["-C", &root_s, "pull", "--ff-only"],
+            parent,
+            &git_env,
+            cancel.as_ref(),
+            None,
+        )?
+    } else {
+        if root.exists()
+            && std::fs::read_dir(&root)
+                .map(|mut entries| entries.next().is_some())
+                .unwrap_or(false)
+        {
+            return Err(crate::ops::OperationError::Failed(format!(
+                "插件仓库目录非空且不是 git 仓库:{}",
+                root.display()
+            )));
+        }
+        let root_s = root.to_string_lossy().to_string();
+        crate::clone::run_cancellable(
+            &state.log_hub,
+            "git clone dsh-plugins",
+            &git,
+            &["clone", DSH_PLUGINS_REPO_URL, &root_s],
+            parent,
+            &git_env,
+            cancel.as_ref(),
+            None,
+        )?
+    };
+    token.check()?;
+    if code != 0 {
+        return Err(crate::ops::OperationError::Failed(format!(
+            "同步 dsh-plugins 失败:{}",
+            tail.last()
+                .cloned()
+                .unwrap_or_else(|| "git 退出码非 0".into())
+        )));
+    }
+
+    if settings.dsh_plugins_path.is_empty() {
+        let _ = crate::config::apply_patch(&serde_json::json!({
+            "dshPluginsPath": root.to_string_lossy().to_string()
+        }));
+    }
+    let profile_summaries = crate::services::plugins::profiles(&home);
+    let packages =
+        crate::services::plugins::scan_packages(&root.to_string_lossy(), &profile_summaries);
+    if packages.is_empty() {
+        return Err(crate::ops::OperationError::Failed(format!(
+            "仓库中没有可安装的 packages/*:{}",
+            root.display()
+        )));
+    }
+    for (index, package) in packages.iter().enumerate() {
+        token.check()?;
+        let progress = 20 + ((index as u8) * 70 / packages.len().max(1) as u8);
+        state.ops.set_stage(
+            state.ops.current().map(|o| o.operation_id).unwrap_or(0),
+            &format!("安装插件 {}…", package.name),
+            Some(progress),
+        );
+        install_package_flow(state, profile, &package.abs_dir, settings, tools, token)?;
+    }
+    Ok(())
 }
 
 /// 移除插件包(dsh plugin --profile <p> remove <name>)。

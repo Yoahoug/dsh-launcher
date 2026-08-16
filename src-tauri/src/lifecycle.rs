@@ -2,7 +2,7 @@
 // 三条退出路径互不干扰:
 //   1. 托盘「退出」/「停止并退出」:先停止 dsh 进程树,再退出(完整退出,无残留进程);
 //   2. 关窗(偏好 quit):detach dsh(继续后台运行) → exit;
-//   3. updater restart:由 updater 插件触发 app.exit(),不停止 dsh、不走普通退出清理。
+//   3. updater restart:由用户确认后触发 app.restart(),不停止 dsh、不走普通退出清理。
 use crate::contract::{CloseBehavior, EVENT_PREFERENCES_CHANGED};
 use crate::state::AppState;
 use std::sync::Arc;

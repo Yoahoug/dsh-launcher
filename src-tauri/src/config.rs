@@ -29,6 +29,32 @@ pub fn config_file() -> PathBuf {
     Path::new(&home_dir()).join(".config/dsh-launcher.json")
 }
 
+/// 更新已下载但用户选择稍后重启时的持久化标记。
+pub fn update_restart_pending_file() -> PathBuf {
+    config_dir().join("update-restart.pending")
+}
+
+pub fn mark_update_restart_pending() -> Result<(), String> {
+    let dir = config_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建更新标记目录失败:{e}"))?;
+    std::fs::write(update_restart_pending_file(), b"1")
+        .map_err(|e| format!("写入更新重启标记失败:{e}"))
+}
+
+pub fn clear_update_restart_pending() {
+    let _ = std::fs::remove_file(update_restart_pending_file());
+}
+
+/// 启动时消费一次延后重启标记,防止重启循环。
+pub fn take_update_restart_pending() -> bool {
+    let file = update_restart_pending_file();
+    if !file.is_file() {
+        return false;
+    }
+    let _ = std::fs::remove_file(file);
+    true
+}
+
 /// 运行态目录:pid 文件、状态快照、日志、托管 Node。
 pub fn state_dir() -> PathBuf {
     if let Ok(d) = std::env::var("DSH_LAUNCHER_STATE_DIR") {

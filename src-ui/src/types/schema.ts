@@ -427,6 +427,8 @@ export interface PluginsSnapshot {
   profiles: ProfileSummary[]
   rows: PluginRow[]
   packages: DshPluginPackage[]
+  /** 生效的 dsh-plugins 仓库根(设置值或 profile deps 自动探测值)。 */
+  pluginsPath?: string | null
   /** 当前生效 profile;null = 不存在/未指定。 */
   profile: string | null
   /** dump-config 失败诊断(此时 rows 为空;UI 展示警示条)。 */

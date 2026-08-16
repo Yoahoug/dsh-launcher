@@ -153,7 +153,13 @@ export function SettingsPage({ onBack: _onBack }: { onBack: () => void }) {
           detail: `v${r.version} 已可用,正在下载安装…`,
         })
         const a = await api.applyUpdate()
-        if (!a.ok) toast({ kind: 'warning', title: '自动更新', detail: a.reason ?? undefined })
+        if (!a.ok) {
+          toast({ kind: 'warning', title: '自动更新', detail: a.reason ?? undefined })
+        } else if (window.confirm('更新已下载到本地，是否立即重启 DSH Launcher 使更新生效？')) {
+          await api.restartApp()
+        } else {
+          toast({ kind: 'info', title: '已延后重启', detail: '下次启动 DSH Launcher 时会自动完成重启。' })
+        }
       } else {
         toast({ kind: 'success', title: '当前已是最新版本', detail: `v${snap?.version ?? '?'}` })
       }

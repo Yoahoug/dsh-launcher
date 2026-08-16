@@ -69,6 +69,7 @@ pub fn run() {
             commands::inspect_environment,
             commands::check_for_update,
             commands::apply_update,
+            commands::restart_app,
             commands::open_dsh,
             commands::open_repo_directory,
             commands::open_log_directory,
@@ -104,6 +105,7 @@ pub fn run() {
             commands::dshctl_dump_config,
             commands::plugins_open_in_explorer,
             commands::plugins_install_package,
+            commands::plugins_install_all,
             commands::plugins_remove_package,
             // M5:技能管理子界面
             commands::skills_get_snapshot,
@@ -214,6 +216,15 @@ pub fn run() {
             app.manage(state.clone());
             app.manage(Arc::new(chat::ChatManager::new()));
             app.manage(Arc::new(dsh_view::DshViewManager::new()));
+
+            // 用户上次选择稍后重启:更新包已在本地,启动新进程后自动完成一次重启并消费标记。
+            if crate::config::take_update_restart_pending() {
+                let restart_handle = app_handle.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    restart_handle.restart();
+                });
+            }
 
             // 迁移旧 Node daemon(幂等):终止旧 daemon、清理 token、记录版本
             let report = migration::run(&state.log_hub);

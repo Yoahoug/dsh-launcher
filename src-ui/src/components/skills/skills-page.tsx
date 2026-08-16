@@ -420,10 +420,12 @@ function InjectionSwitch({
 /** 已启动子界面的单条注入技能。 */
 function ActiveSkillCard({
   skill,
+  checked,
   onToggle,
   toggling,
 }: {
   skill: ActiveSkill
+  checked: boolean
   onToggle: (on: boolean) => void
   toggling: boolean
 }) {
@@ -452,8 +454,8 @@ function ActiveSkillCard({
           </p>
         </div>
         <InjectionSwitch
-          checked
-          label={`关闭注入 ${skill.name}`}
+          checked={checked}
+          label={`${checked ? '关闭' : '开启'}注入 ${skill.name}`}
           onToggle={(on) => onToggle(on)}
           disabled={toggling}
         />
@@ -462,8 +464,33 @@ function ActiveSkillCard({
   )
 }
 
+/** 已启动页的系统自带技能:由 dsh 内置 skill-filesystem 管理,不经过外部注入开关。 */
+function BuiltinSkillCard({ skill }: { skill: SkillSummary }) {
+  return (
+    <div className="rounded-xl border border-border bg-card p-3.5 transition-all duration-300 hover:border-border-hover">
+      <div className="flex items-start gap-2">
+        <FileText className="mt-0.5 size-4 shrink-0 text-blue-500" />
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="font-mono text-sm font-semibold text-foreground">{skill.name}</span>
+            <Badge variant="primary">系统自带</Badge>
+            <Badge variant="neutral">模型{skill.modelInvocable ? '可调用' : '禁用'}</Badge>
+            <Badge variant="neutral">用户{skill.userInvocable ? '可调用' : '禁用'}</Badge>
+          </div>
+          <p className="mt-1 line-clamp-2 text-xs text-muted-foreground" title={skill.description}>
+            {skill.description}
+          </p>
+          <p className="mt-1 truncate font-mono text-[10px] text-muted-foreground/70" title={skill.path}>
+            {skill.path}
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 /** 技能管理子界面:独立管理增删改 + 自动扫描本机外部技能。 */
-export function SkillsPage() {
+export function SkillsPage({ onOpenPlugins }: { onOpenPlugins?: () => void }) {
   const { toast } = useToast()
   const [tab, setTab] = React.useState<'active' | 'discover'>('active')
   const [snap, setSnap] = React.useState<SkillsSnapshot | null>(null)
@@ -524,6 +551,12 @@ export function SkillsPage() {
     () => new Set((activeSnap?.skills ?? []).map((s) => s.name)),
     [activeSnap],
   )
+
+  const builtinSkills = React.useMemo(
+    () => (snap?.skills ?? []).filter((s) => s.source === 'managed' || s.source === 'project'),
+    [snap],
+  )
+  const activeCount = builtinSkills.length + (activeSnap?.skills.length ?? 0)
 
   const grouped = React.useMemo(() => {
     const map = new Map<SkillSource, SkillSummary[]>()
@@ -654,9 +687,17 @@ export function SkillsPage() {
             <SkillCard
               key={`${skill.source}:${skill.name}:${skill.path}`}
               skill={skill}
-              injected={injectedSet.has(skill.name)}
-              injectChecked={control?.skills[skill.name] ?? true}
-              onToggleInject={toggleFor(skill.name)}
+              injected={source !== 'managed' && source !== 'project' ? injectedSet.has(skill.name) : undefined}
+              injectChecked={
+                source !== 'managed' && source !== 'project'
+                  ? (control?.skills[skill.name] ?? injectedSet.has(skill.name))
+                  : undefined
+              }
+              onToggleInject={
+                snap?.pluginsInstalled && source !== 'managed' && source !== 'project'
+                  ? toggleFor(skill.name)
+                  : undefined
+              }
               onPreview={() => setPreviewing(skill)}
               onEdit={source === 'managed' ? () => setEditing(skill) : undefined}
               onDelete={source === 'managed' ? () => void del(skill) : undefined}
@@ -699,7 +740,7 @@ export function SkillsPage() {
             <PlugZap className="size-3.5 text-emerald-500" />
             已启动
             <span className="rounded-full bg-emerald-500/10 px-1.5 text-[10px] text-emerald-600 dark:text-emerald-400">
-              {activeSnap?.skills.length ?? 0}
+              {activeCount}
             </span>
           </button>
           <button
@@ -735,7 +776,14 @@ export function SkillsPage() {
           {snap.pluginsInstalled ? (
             <Badge variant="success">skill-external-roots 已安装</Badge>
           ) : (
-            <Badge variant="warning">未检测到 skill-external-roots 插件</Badge>
+            <>
+              <Badge variant="warning">未检测到 skill-external-roots 插件</Badge>
+              {onOpenPlugins && (
+                <Button variant="outline" size="sm" className="h-6 px-2 text-[11px]" onClick={onOpenPlugins}>
+                  前往插件安装
+                </Button>
+              )}
+            </>
           )}
           {tab === 'active' ? (
             <>
@@ -764,8 +812,10 @@ export function SkillsPage() {
           {tab === 'active' ? (
             <ActiveSkillsView
               activeSnap={activeSnap}
+              builtinSkills={builtinSkills}
               control={control}
               controlEnabled={controlEnabled}
+              pluginsInstalled={snap?.pluginsInstalled ?? false}
               toggling={toggling}
               onToggle={toggleSkill}
               onEnableControl={enableControl}
@@ -811,8 +861,10 @@ export function SkillsPage() {
 /** 「已启动」子界面:运行中 dsh 实际注入的技能清单(插件回写)。 */
 function ActiveSkillsView({
   activeSnap,
+  builtinSkills,
   control,
   controlEnabled,
+  pluginsInstalled,
   toggling,
   onToggle,
   onEnableControl,
@@ -820,8 +872,10 @@ function ActiveSkillsView({
   loading,
 }: {
   activeSnap: SkillsActiveSnapshot | null
+  builtinSkills: SkillSummary[]
   control: SkillsControlState | null
   controlEnabled: boolean
+  pluginsInstalled: boolean
   toggling: string | null
   onToggle: (name: string, on: boolean) => void
   onEnableControl: () => void
@@ -832,12 +886,13 @@ function ActiveSkillsView({
     return <p className="py-10 text-center text-sm text-muted-foreground">加载中…</p>
   }
   const skills = activeSnap.skills
+  const externalSkills = skills
   const writtenAt = activeSnap.writtenAt
     ? new Date(activeSnap.writtenAt).toLocaleString()
     : null
   return (
     <div className="flex flex-col gap-3">
-      {!controlEnabled && (
+      {!controlEnabled && pluginsInstalled && (
         <div className="flex flex-wrap items-center gap-3 rounded-xl border border-amber-500/30 bg-amber-500/5 p-4">
           <Plug className="size-5 shrink-0 text-amber-500" />
           <div className="min-w-0 flex-1 text-xs text-muted-foreground">
@@ -873,7 +928,34 @@ function ActiveSkillsView({
         </div>
       )}
 
-      {controlEnabled && skills.length === 0 && !activeSnap.error && (
+      {!pluginsInstalled && (
+        <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-xs text-muted-foreground">
+          外部发现技能依赖 <code className="font-mono">@dsh-plugins/skill-external-roots</code>；请先到“插件”页安装 dsh-plugins 仓库中的插件。
+        </div>
+      )}
+
+      <section className="space-y-2">
+        <div className="flex items-center gap-2 px-1">
+          <h3 className="text-sm font-semibold">系统自带</h3>
+          <Badge variant="neutral">{builtinSkills.length}</Badge>
+        </div>
+        {builtinSkills.length > 0 ? (
+          <div className="grid grid-cols-1 gap-2 xl:grid-cols-2">
+            {builtinSkills.map((skill) => <BuiltinSkillCard key={`${skill.source}:${skill.name}:${skill.path}`} skill={skill} />)}
+          </div>
+        ) : (
+          <p className="rounded-xl border border-dashed border-border px-4 py-6 text-center text-xs text-muted-foreground">
+            暂无系统自带技能
+          </p>
+        )}
+      </section>
+
+      <section className="space-y-2">
+        <div className="flex items-center gap-2 px-1">
+          <h3 className="text-sm font-semibold">外部发现</h3>
+          <Badge variant="neutral">{externalSkills.length}</Badge>
+        </div>
+      {controlEnabled && externalSkills.length === 0 && !activeSnap.error && (
         <div className="flex flex-col items-center gap-2 py-10 text-center text-sm text-muted-foreground">
           <PlugZap className="size-6 text-muted-foreground/50" />
           <p>暂无已启动技能</p>
@@ -885,18 +967,20 @@ function ActiveSkillsView({
         </div>
       )}
 
-      {skills.length > 0 && (
+      {externalSkills.length > 0 && (
         <div className="grid grid-cols-1 gap-2 xl:grid-cols-2">
-          {skills.map((skill) => (
+          {externalSkills.map((skill) => (
             <ActiveSkillCard
               key={skill.name}
               skill={skill}
+              checked={control?.skills[skill.name] ?? true}
               onToggle={(on) => onToggle(skill.name, on)}
               toggling={toggling === skill.name}
             />
           ))}
         </div>
       )}
+      </section>
 
       <p className="px-1 text-[11px] text-muted-foreground/70">
         说明:此清单由运行中 dsh 的 skill-external-roots 插件在每次收集后回写(内容变化才写)。关闭开关

@@ -58,6 +58,7 @@ export interface DesktopApi {
   getCursorPosition(): Promise<[number, number] | null>
   checkForUpdate(): Promise<UpdateCheckResult>
   applyUpdate(): Promise<ActionAccepted>
+  restartApp(): Promise<void>
   openDsh(): Promise<void>
   /** M3:打开内嵌 chat WebView(零权限;服务未就绪时先启动)。 */
   openChat(): Promise<ChatStateSnapshot>
@@ -103,6 +104,7 @@ export interface DesktopApi {
   dshctlDumpConfig(profile?: string): Promise<string>
   pluginsOpenInExplorer(absDir: string): Promise<void>
   pluginsInstallPackage(profile: string, absDir: string): Promise<ActionAccepted>
+  pluginsInstallAll(profile: string): Promise<ActionAccepted>
   pluginsRemovePackage(profile: string, name: string): Promise<ActionAccepted>
   // M5:技能管理子界面
   skillsGetSnapshot(): Promise<SkillsSnapshot>
@@ -150,6 +152,7 @@ export const desktopApi: DesktopApi = {
   getCursorPosition: () => invoke('get_cursor_position'),
   checkForUpdate: () => invoke('check_for_update'),
   applyUpdate: () => invoke('apply_update'),
+  restartApp: () => invoke('restart_app'),
   openDsh: () => invoke('open_dsh'),
   openChat: () => invoke('open_chat'),
   closeChat: () => invoke('close_chat'),
@@ -188,6 +191,7 @@ export const desktopApi: DesktopApi = {
   pluginsOpenInExplorer: (absDir) => invoke('plugins_open_in_explorer', { absDir }),
   pluginsInstallPackage: (profile, absDir) =>
     invoke('plugins_install_package', { profile, absDir }),
+  pluginsInstallAll: (profile) => invoke('plugins_install_all', { profile }),
   pluginsRemovePackage: (profile, name) => invoke('plugins_remove_package', { profile, name }),
   // M5:技能管理子界面
   skillsGetSnapshot: () => invoke('skills_get_snapshot'),

@@ -339,6 +339,7 @@ export const mockApi: DesktopApi = {
   },
   checkForUpdate: async () => ({ ok: true, reason: '已是最新版本(mock)', version: null, error: null }),
   applyUpdate: async () => ({ ok: true }),
+  restartApp: async () => {},
   openDsh: async () => {},
   openChat: async () => ({ status: 'ready', url: 'http://127.0.0.1:3080/', error: null }),
   closeChat: async () => {},
@@ -483,6 +484,7 @@ export const mockApi: DesktopApi = {
         installedIn: ['web'],
       },
     ],
+    pluginsPath: '/Users/you/Desktop/dsh-plugins',
     profile: 'web',
     dumpError: null,
   }),
@@ -532,6 +534,10 @@ export const mockApi: DesktopApi = {
   pluginsOpenInExplorer: async () => {},
   pluginsInstallPackage: async (_profile, absDir): Promise<ActionAccepted> => {
     logEntry('dsh', 'info', `安装插件包:${absDir}(mock)`)
+    return { ok: true }
+  },
+  pluginsInstallAll: async (_profile): Promise<ActionAccepted> => {
+    logEntry('dsh', 'info', '同步并安装全部 dsh-plugins(mock)')
     return { ok: true }
   },
   pluginsRemovePackage: async (_profile, name): Promise<ActionAccepted> => {

@@ -1473,7 +1473,7 @@ impl AppState {
         }
     }
 
-    /// 下载并安装更新(独占 SelfUpdate 操作),完成后重启应用。
+    /// 下载并安装更新(独占 SelfUpdate 操作),完成后等待用户确认重启。
     pub async fn apply_update(&self, app: &AppHandle) -> ActionAccepted {
         use tauri_plugin_updater::UpdaterExt;
         let updater = match app.updater() {
@@ -1528,13 +1528,29 @@ impl AppState {
         {
             Ok(_) => {
                 self.ops.finish(id, OperationStatus::Success, None);
+                if let Err(e) = crate::config::mark_update_restart_pending() {
+                    self.log_hub.append(
+                        "launcher",
+                        crate::contract::LogLevel::Warn,
+                        &format!("更新已安装但无法写入延后重启标记:{e}"),
+                    );
+                }
+                self.set_update(app, |u| {
+                    u.installing = false;
+                    u.available = true;
+                    u.message = Some("更新已下载,等待重启应用".into());
+                });
                 self.log_hub.append(
                     "launcher",
                     crate::contract::LogLevel::Ok,
-                    "更新已安装,应用将自动重启",
+                    "更新已安装,等待用户确认重启",
                 );
-                // restart 返回 !,后续不可达
-                app.restart()
+                ActionAccepted {
+                    ok: true,
+                    reason: Some("更新已下载,请确认是否重启应用".into()),
+                    aborted: None,
+                    already: None,
+                }
             }
             Err(e) => {
                 self.ops
@@ -1551,6 +1567,12 @@ impl AppState {
                 }
             }
         }
+    }
+
+    /// 用户确认后重启应用;清除延后重启标记避免下一次启动再次触发。
+    pub fn restart_app(&self, app: &AppHandle) -> ! {
+        crate::config::clear_update_restart_pending();
+        app.restart()
     }
 
     pub fn open_dsh(&self) -> Result<(), String> {

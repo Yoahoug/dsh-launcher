@@ -137,4 +137,12 @@ describe('插件管理子界面', () => {
     await user.click(installBtn)
     expect(spy).toHaveBeenCalledWith('web', '/x/packages/vision-bridge')
   })
+
+  it('dsh-plugins 面板:一键同步并安装全部包', async () => {
+    const user = userEvent.setup()
+    const spy = vi.spyOn(mockApi, 'pluginsInstallAll').mockResolvedValue({ ok: true })
+    renderPage()
+    await user.click(await screen.findByRole('button', { name: '同步并安装' }))
+    expect(spy).toHaveBeenCalledWith('web')
+  })
 })

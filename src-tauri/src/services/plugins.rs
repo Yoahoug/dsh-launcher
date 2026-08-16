@@ -995,6 +995,8 @@ pub fn snapshot(
                     profiles,
                     rows,
                     packages,
+                    plugins_path: (!dsh_plugins_path.is_empty())
+                        .then(|| dsh_plugins_path.to_string()),
                     profile,
                     dump_error: None,
                 };
@@ -1009,6 +1011,7 @@ pub fn snapshot(
         profiles,
         rows,
         packages,
+        plugins_path: (!dsh_plugins_path.is_empty()).then(|| dsh_plugins_path.to_string()),
         profile,
         dump_error,
     }
@@ -1455,18 +1458,47 @@ pub fn scan_packages(dsh_plugins_path: &str, profiles: &[ProfileSummary]) -> Vec
 /// 自动探测 dsh-plugins 根:解析各 profile deps 里 `file:*dsh-plugins/packages/*` 链接。
 /// 全部链接指向同一根时才返回;否则 None(提示手工填写)。
 pub fn detect_plugins_path(profiles: &[ProfileSummary]) -> Option<String> {
+    detect_plugins_path_with_base(profiles, None)
+}
+
+/// 自动探测 dsh-plugins 根,支持绝对/相对 `file:` spec。
+/// 相对 spec 以对应 profile 目录为基准;传入 dsh_home 后返回规范化绝对路径。
+pub fn detect_plugins_path_from_home(
+    profiles: &[ProfileSummary],
+    dsh_home: &Path,
+) -> Option<String> {
+    detect_plugins_path_with_base(profiles, Some(dsh_home))
+}
+
+fn detect_plugins_path_with_base(
+    profiles: &[ProfileSummary],
+    dsh_home: Option<&Path>,
+) -> Option<String> {
     let mut found: Vec<String> = Vec::new();
     for p in profiles {
         for spec in p.deps.values() {
-            let Some(rest) = spec.strip_prefix("file:") else {
+            let Some(rest) = spec.strip_prefix("file:").map(str::trim) else {
                 continue;
             };
-            for marker in ["/packages/", "\\packages\\"] {
-                if let Some(idx) = rest.find(marker) {
-                    found.push(rest[..idx].to_string());
-                    break;
-                }
-            }
+            let idx = ["/packages/", "\\packages\\"]
+                .iter()
+                .filter_map(|marker| rest.find(marker))
+                .min();
+            let Some(idx) = idx else { continue };
+            let raw_root = &rest[..idx];
+            let candidate = if Path::new(raw_root).is_absolute() {
+                PathBuf::from(raw_root)
+            } else if let Some(home) = dsh_home {
+                profile_dir(home, &p.name).join(raw_root)
+            } else {
+                PathBuf::from(raw_root)
+            };
+            let normalized = candidate
+                .canonicalize()
+                .unwrap_or(candidate)
+                .to_string_lossy()
+                .replace('\\', "/");
+            found.push(normalized);
         }
     }
     found.sort();

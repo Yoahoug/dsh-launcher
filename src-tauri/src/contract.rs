@@ -574,6 +574,8 @@ pub struct PluginsSnapshot {
     pub profiles: Vec<ProfileSummary>,
     pub rows: Vec<PluginRow>,
     pub packages: Vec<DshPluginPackage>,
+    /// 生效的 dsh-plugins 仓库根(设置值或 profile deps 自动探测值)。
+    pub plugins_path: Option<String>,
     /// 当前生效 profile;None = 不存在/未指定。
     pub profile: Option<String>,
     /// dump-config 失败诊断(此时 rows 为空;UI 展示警示条)。
