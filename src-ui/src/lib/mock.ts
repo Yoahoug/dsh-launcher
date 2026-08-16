@@ -4,6 +4,7 @@
 import type {
   ActionAccepted,
   ActionName,
+  ActiveSkill,
   AppSnapshot,
   DesktopPreferences,
   DesktopSnapshot,
@@ -16,7 +17,9 @@ import type {
   PluginsSnapshot,
   SettingsSnapshot,
   SkillSummary,
+  SkillsControlState,
   SkillsSnapshot,
+  SkillToggleResult,
   Workspace,
 } from '@/types/schema'
 import type { DesktopApi } from '@/lib/desktop-api'
@@ -591,6 +594,36 @@ export const mockApi: DesktopApi = {
     validated: true,
     error: null,
   }),
+  skillsGetActive: async () => ({
+    file: '/Users/u/.dsh/state/skills-active.json',
+    writtenAt: Date.now(),
+    skills: mockActiveSkills(),
+    error: null,
+    controlFile: '/Users/u/.dsh/skills-control.json',
+    controlFileExists: true,
+  }),
+  skillsGetControl: async (): Promise<SkillsControlState> => ({
+    file: '/Users/u/.dsh/skills-control.json',
+    version: 1,
+    roots: { codex: true, claude: true, cursor: true, opencode: true },
+    skills: { ...mockControlSkills },
+  }),
+  skillsSetInjected: async (name, enabled): Promise<SkillToggleResult> => {
+    mockControlSkills[name] = enabled
+    window.dispatchEvent(new CustomEvent('mock:skills'))
+    return {
+      ok: true,
+      summary: `${name} 已${enabled ? '开启' : '关闭'}注入(mock)· 运行中 dsh 约 1-2 秒内热更新`,
+      enabled,
+    }
+  },
+  skillsEnableControl: async (): Promise<PatchWriteResult> => ({
+    backup: 'cordis.patch.yml.bak-1',
+    ok: true,
+    summary: '已启用注入控制:skill-external-roots 行写入 skillControlFile/activeFile(mock)',
+    validated: true,
+    error: null,
+  }),
   onSkillsChanged: async (cb) => {
     const h = () => cb()
     window.addEventListener('mock:skills', h)
@@ -665,6 +698,33 @@ function defaultSkills() {
   ] as SkillSummary[]
 }
 
+function mockActiveSkills() {
+  return [
+    {
+      name: 'tavily-extract',
+      description: 'Extract clean markdown or text content from specific URLs via the Tavily CLI.',
+      whenToUse: 'user supplies URLs and wants clean text',
+      source: 'external',
+      root: '/Users/u/.claude/skills',
+      path: '/Users/u/.claude/skills/tavily-extract/SKILL.md',
+      modelInvocable: true,
+      userInvocable: true,
+    },
+    {
+      name: 'win-host',
+      description: 'Windows 算力主机统一资源入口(训练/采集/重任务)。',
+      whenToUse: null,
+      source: 'external',
+      root: '/Users/u/.codex/skills',
+      path: '/Users/u/.codex/skills/win-host/SKILL.md',
+      modelInvocable: true,
+      userInvocable: true,
+    },
+  ] as ActiveSkill[]
+}
+
+let mockControlSkills: Record<string, boolean> = { 'win-host': true }
+
 let mockPluginRows: import('@/types/schema').PluginRow[] = defaultPluginRows()
 let mockSkills: SkillSummary[] = defaultSkills()
 
@@ -672,6 +732,7 @@ let mockSkills: SkillSummary[] = defaultSkills()
 export function resetM5State() {
   mockPluginRows = defaultPluginRows()
   mockSkills = defaultSkills()
+  mockControlSkills = { 'win-host': true }
 }
 
 export { EVENTS }

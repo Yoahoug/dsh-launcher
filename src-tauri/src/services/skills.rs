@@ -726,6 +726,163 @@ pub fn preview(source_path: &str) -> Result<String, String> {
     std::fs::read_to_string(&f).map_err(|e| format!("读取失败:{e}"))
 }
 
+// ── 注入控制(与 skill-external-roots v0.2 联动) ──────────
+
+/// 控制文件路径:约定 $DSH_HOME/skills-control.json。
+pub fn control_file(dsh_home: &Path) -> PathBuf {
+    dsh_home.join("skills-control.json")
+}
+
+/// active 清单路径:约定 $DSH_HOME/state/skills-active.json。
+pub fn active_file(dsh_home: &Path) -> PathBuf {
+    dsh_home.join("state").join("skills-active.json")
+}
+
+/// 读目标 profile 补丁中 skill-external-roots 行配置的 skillControlFile。
+fn patch_skill_control_file(dsh_home: &Path, profile: &str) -> Option<String> {
+    let path = plugins::profile_patch_path(dsh_home, profile);
+    let text = std::fs::read_to_string(&path).ok()?;
+    let doc = plugins::split_patch_doc(&text);
+    for e in doc.entries {
+        if e.id != "skill-external-roots" {
+            continue;
+        }
+        if let Some(v) = plugins::extract_config(&e.block, e.block.contains("!!js")) {
+            if let Some(s) = v.get("skillControlFile").and_then(|x| x.as_str()) {
+                if !s.is_empty() {
+                    return Some(s.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 已启动技能清单快照(读插件回写的 skills-active.json + 控制配置状态)。
+pub fn active_snapshot(ctx: &ScanCtx, profile: &str) -> crate::contract::SkillsActiveSnapshot {
+    let home = plugins::dsh_home_dir(&ctx.dsh_home_setting);
+    let file = active_file(&home);
+    let control_file = patch_skill_control_file(&home, profile);
+    let control_file_exists = control_file
+        .as_ref()
+        .is_some_and(|p| Path::new(p).is_file());
+    let (written_at, skills, error) = match std::fs::read_to_string(&file) {
+        Ok(raw) => match serde_json::from_str::<serde_json::Value>(&raw) {
+            Ok(v) => {
+                let written_at = v.get("writtenAt").and_then(|x| x.as_i64());
+                let skills: Vec<crate::contract::ActiveSkill> = v
+                    .get("skills")
+                    .and_then(|x| x.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|e| serde_json::from_value(e.clone()).ok())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                (written_at, skills, None)
+            }
+            Err(e) => (None, Vec::new(), Some(format!("解析失败:{e}"))),
+        },
+        Err(_) => (None, Vec::new(), None),
+    };
+    crate::contract::SkillsActiveSnapshot {
+        file: file.to_string_lossy().to_string(),
+        written_at,
+        skills,
+        error,
+        control_file,
+        control_file_exists,
+    }
+}
+
+/// 注入控制文件状态(启动器写,插件读;缺失 = 默认全开)。
+pub fn control_state(ctx: &ScanCtx) -> crate::contract::SkillsControlState {
+    let home = plugins::dsh_home_dir(&ctx.dsh_home_setting);
+    let file = control_file(&home);
+    let (version, roots, skills) = match std::fs::read_to_string(&file) {
+        Ok(raw) => serde_json::from_str::<serde_json::Value>(&raw)
+            .ok()
+            .map(|v| {
+                let version = v.get("version").and_then(|x| x.as_u64()).unwrap_or(1) as u32;
+                let roots = bool_map(v.get("roots"));
+                let skills = bool_map(v.get("skills"));
+                (version, roots, skills)
+            })
+            .unwrap_or((1, Default::default(), Default::default())),
+        Err(_) => (1, Default::default(), Default::default()),
+    };
+    crate::contract::SkillsControlState {
+        file: file.to_string_lossy().to_string(),
+        version,
+        roots,
+        skills,
+    }
+}
+
+fn bool_map(v: Option<&serde_json::Value>) -> std::collections::BTreeMap<String, bool> {
+    v.and_then(|x| x.as_object())
+        .map(|o| {
+            o.iter()
+                .filter_map(|(k, val)| val.as_bool().map(|b| (k.clone(), b)))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 技能注入开关:更新控制文件 skills[name] = enabled(原子写)。
+pub fn set_injected(
+    _log: &Arc<LogHub>,
+    ctx: &ScanCtx,
+    name: &str,
+    enabled: bool,
+) -> Result<crate::contract::SkillToggleResult, String> {
+    let name = name.trim();
+    if !is_kebab(name) {
+        return Err(format!("技能名 {name} 必须为 kebab-case"));
+    }
+    let home = plugins::dsh_home_dir(&ctx.dsh_home_setting);
+    let file = control_file(&home);
+    let current = control_state(ctx);
+    let mut skills = current.skills;
+    skills.insert(name.to_string(), enabled);
+    let payload = serde_json::json!({
+        "version": 1,
+        "roots": serde_json::Value::Object(current.roots.iter().map(|(k, v)| (k.clone(), serde_json::json!(v))).collect()),
+        "skills": serde_json::Value::Object(skills.iter().map(|(k, v)| (k.clone(), serde_json::json!(v))).collect()),
+    });
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("创建目录失败:{e}"))?;
+    }
+    let tmp = file.with_extension("json.tmp");
+    {
+        use std::io::Write;
+        let mut f = std::fs::File::create(&tmp).map_err(|e| format!("写入控制文件失败:{e}"))?;
+        f.write_all(
+            serde_json::to_string_pretty(&payload)
+                .unwrap_or_default()
+                .as_bytes(),
+        )
+        .map_err(|e| format!("写入控制文件失败:{e}"))?;
+    }
+    std::fs::rename(&tmp, &file).map_err(|e| format!("控制文件落盘失败:{e}"))?;
+    Ok(crate::contract::SkillToggleResult {
+        ok: true,
+        summary: format!(
+            "{name} 已{}注入(控制文件 {})· 运行中 dsh 约 1-2 秒内热更新",
+            if enabled { "开启" } else { "关闭" },
+            file.display()
+        ),
+        enabled,
+    })
+}
+
+/// 外部发现扫描与已启动清单的去重视图:返回 (技能名 → 是否已注入)。
+pub fn injected_map(
+    active: &crate::contract::SkillsActiveSnapshot,
+) -> std::collections::HashSet<String> {
+    active.skills.iter().map(|s| s.name.clone()).collect()
+}
+
 // ── 测试 ──────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1011,6 +1168,90 @@ mod tests {
         let f = base.join("SKILL.md");
         std::fs::write(&f, "hello").unwrap();
         assert_eq!(preview(&base.to_string_lossy()).unwrap(), "hello");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn set_injected_writes_control_file_atomically() {
+        let base = std::env::temp_dir().join(format!("dsh-skills-ctl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let dsh = base.join("dsh");
+        std::fs::create_dir_all(&dsh).unwrap();
+        let ctx = ScanCtx {
+            repo_path: "/tmp/none".into(),
+            dsh_home_setting: dsh.to_string_lossy().to_string(),
+            skill_managed_root_setting: String::new(),
+            external_skill_roots: vec![],
+        };
+        let log = Arc::new(LogHub::new(
+            std::env::temp_dir().join(format!("dsh-skills-ctl-{}.log", std::process::id())),
+            Arc::new(|_| {}),
+            true,
+        ));
+        // 非法名拒绝
+        assert!(set_injected(&log, &ctx, "Bad Name", false).is_err());
+        // 关闭 → 打开
+        let r = set_injected(&log, &ctx, "win-host", false).unwrap();
+        assert!(r.ok && !r.enabled);
+        let ctl = control_state(&ctx);
+        assert_eq!(ctl.skills.get("win-host"), Some(&false));
+        assert_eq!(ctl.version, 1);
+        let r2 = set_injected(&log, &ctx, "win-host", true).unwrap();
+        assert!(r2.enabled);
+        let ctl2 = control_state(&ctx);
+        assert_eq!(ctl2.skills.get("win-host"), Some(&true));
+        // 文件可解析为合法 JSON(插件读取格式)
+        let raw = std::fs::read_to_string(control_file(&dsh)).unwrap();
+        assert!(raw.contains("\"win-host\""));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn active_snapshot_parses_plugin_report_and_detects_config() {
+        let base = std::env::temp_dir().join(format!("dsh-skills-active-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let dsh = base.join("dsh");
+        std::fs::create_dir_all(dsh.join("state")).unwrap();
+        std::fs::create_dir_all(dsh.join("profiles/web")).unwrap();
+        // profile patch:skill-external-roots 行配置了 skillControlFile
+        std::fs::write(
+            dsh.join("profiles/web/cordis.patch.yml"),
+            "- id: skill-external-roots\n  config:\n    skillControlFile: /tmp/x/skills-control.json\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dsh.join("state/skills-active.json"),
+            r#"{"version":1,"writtenAt":1723800000000,"skills":[
+              {"name":"tavily-extract","description":"d","whenToUse":"w","source":"external",
+               "root":"/Users/u/.claude/skills","path":"/Users/u/.claude/skills/tavily-extract/SKILL.md",
+               "modelInvocable":true,"userInvocable":true}]}"#,
+        )
+        .unwrap();
+        let ctx = ScanCtx {
+            repo_path: "/tmp/none".into(),
+            dsh_home_setting: dsh.to_string_lossy().to_string(),
+            skill_managed_root_setting: String::new(),
+            external_skill_roots: vec![],
+        };
+        let snap = active_snapshot(&ctx, "web");
+        assert!(snap.error.is_none(), "{:?}", snap.error);
+        assert_eq!(snap.skills.len(), 1);
+        assert_eq!(snap.skills[0].name, "tavily-extract");
+        assert_eq!(snap.skills[0].root, "/Users/u/.claude/skills");
+        assert_eq!(snap.written_at, Some(1723800000000));
+        assert_eq!(
+            snap.control_file.as_deref(),
+            Some("/tmp/x/skills-control.json")
+        );
+        assert!(!snap.control_file_exists);
+        // 去重集合
+        let injected = injected_map(&snap);
+        assert!(injected.contains("tavily-extract"));
+        assert!(!injected.contains("win-host"));
+        // 无文件 → 空 + 无错误
+        let _ = std::fs::remove_file(dsh.join("state/skills-active.json"));
+        let snap2 = active_snapshot(&ctx, "web");
+        assert!(snap2.skills.is_empty() && snap2.error.is_none());
         let _ = std::fs::remove_dir_all(&base);
     }
 }

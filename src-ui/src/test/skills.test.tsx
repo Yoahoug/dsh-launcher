@@ -1,4 +1,4 @@
-// dsh-launcher · UI 回归:技能管理子界面(分组展示 + 新建/删除 + 导入 + 一键启用)
+// dsh-launcher · UI 回归:技能子界面(已启动/外部发现 + 注入开关 + 去重 + 新建/删除/导入/一键启用)
 import { describe, expect, it, vi } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -53,9 +53,16 @@ function renderPage() {
   )
 }
 
+/** 切到「外部发现」子界面。 */
+async function goDiscover(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByRole('button', { name: /外部发现/ }))
+}
+
 describe('技能管理子界面', () => {
   it('按工具分组展示技能 + 调用策略徽标 + 已启用根状态', async () => {
+    const user = userEvent.setup()
     renderPage()
+    await goDiscover(user)
     expect(await screen.findByText('已管理')).toBeInTheDocument()
     expect(screen.getByText('Codex')).toBeInTheDocument()
     expect(screen.getByText('Claude Code')).toBeInTheDocument()
@@ -76,13 +83,14 @@ describe('技能管理子界面', () => {
 
   it('新建技能:kebab 校验失败不提交,合法后调用 skillsCreate', async () => {
     const user = userEvent.setup()
+    renderPage()
+    await goDiscover(user)
     const spy = vi.spyOn(mockApi, 'skillsCreate').mockResolvedValue({
       name: 'new-skill', description: '新技能', whenToUse: null,
       modelInvocable: true, userInvocable: true, source: 'managed',
       dir: '/Users/u/.dsh/skills/new-skill', path: '/Users/u/.dsh/skills/new-skill/SKILL.md',
       sizeBytes: 10, hasScripts: false,
     })
-    renderPage()
     await user.click(await screen.findByRole('button', { name: '新建技能' }))
     await user.type(screen.getByLabelText(/技能名/), 'Bad Name')
     await user.type(screen.getByLabelText(/描述/), '描述')
@@ -100,6 +108,7 @@ describe('技能管理子界面', () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
     const spy = vi.spyOn(mockApi, 'skillsDelete').mockResolvedValue(undefined)
     renderPage()
+    await goDiscover(user)
     await user.click(await screen.findByLabelText('删除 my-skill'))
     expect(confirmSpy).toHaveBeenCalled()
     expect(spy).toHaveBeenCalledWith('my-skill')
@@ -107,13 +116,14 @@ describe('技能管理子界面', () => {
 
   it('外部技能可导入到 dsh(skillsImport)', async () => {
     const user = userEvent.setup()
+    renderPage()
+    await goDiscover(user)
     const spy = vi.spyOn(mockApi, 'skillsImport').mockResolvedValue({
       name: 'codex-helper', description: 'Codex helper', whenToUse: null,
       modelInvocable: true, userInvocable: true, source: 'managed',
       dir: '/Users/u/.dsh/skills/codex-helper', path: '/Users/u/.dsh/skills/codex-helper/SKILL.md',
       sizeBytes: 10, hasScripts: true,
     })
-    renderPage()
     const card = (await screen.findByText('codex-helper')).closest('div.rounded-xl') as HTMLElement | null
     expect(card).not.toBeNull()
     const importBtn = within(card!).getByRole('button', { name: '导入到 dsh' })
@@ -127,8 +137,66 @@ describe('技能管理子界面', () => {
       backup: 'cordis.patch.yml.bak-1', ok: true, summary: '已写入 customSkillDirs', validated: true, error: null,
     })
     renderPage()
+    await goDiscover(user)
     const enableBtn = (await screen.findAllByRole('button', { name: '一键启用' }))[0]!
     await user.click(enableBtn)
     expect(spy).toHaveBeenCalledWith('web', '/Users/u/.codex/skills')
+  })
+})
+
+describe('技能注入控制(已启动/外部发现两子界面)', () => {
+  it('默认展示「已启动」子界面:运行中 dsh 注入清单 + 开关关闭调用 skillsSetInjected', async () => {
+    const user = userEvent.setup()
+    const spy = vi.spyOn(mockApi, 'skillsSetInjected').mockResolvedValue({
+      ok: true, summary: 'win-host 已关闭注入(mock)', enabled: false,
+    })
+    renderPage()
+    // 已启动清单(来自 mock active):tavily-extract 与 win-host
+    expect(await screen.findByText('tavily-extract')).toBeInTheDocument()
+    expect(screen.getByText('win-host')).toBeInTheDocument()
+    expect(screen.getAllByText('已启动').length).toBeGreaterThanOrEqual(2)
+    expect(screen.getByText(/注入控制已启用/)).toBeInTheDocument()
+    // 关闭 win-host 注入
+    const sw = screen.getByRole('switch', { name: /关闭注入 win-host/ })
+    await user.click(sw)
+    expect(spy).toHaveBeenCalledWith('win-host', false)
+    expect(await screen.findAllByText(/已关闭注入/).then((els) => els.length)).toBeGreaterThanOrEqual(1)
+  })
+
+  it('「外部发现」与「已启动」去重:已注入 ✓ / 未注入 徽标 + 每卡注入开关', async () => {
+    const user = userEvent.setup()
+    const spy = vi.spyOn(mockApi, 'skillsSetInjected').mockResolvedValue({
+      ok: true, summary: 'tavily-extract 已关闭注入(mock)', enabled: false,
+    })
+    renderPage()
+    await goDiscover(user)
+    // 去重:active 里的 tavily-extract → 已注入;其余 → 未注入
+    expect(await screen.findByText('已注入 ✓')).toBeInTheDocument()
+    expect(screen.getAllByText('未注入').length).toBeGreaterThanOrEqual(2)
+    // 外部技能卡片带注入开关(默认开),关闭调用 skillsSetInjected
+    const sw = screen.getByRole('switch', { name: '注入 tavily-extract' })
+    expect(sw).toHaveAttribute('aria-checked', 'true')
+    await user.click(sw)
+    expect(spy).toHaveBeenCalledWith('tavily-extract', false)
+  })
+
+  it('未启用注入控制时「已启动」子界面引导一键启用', async () => {
+    const user = userEvent.setup()
+    vi.spyOn(mockApi, 'skillsGetActive').mockResolvedValue({
+      file: '/Users/u/.dsh/state/skills-active.json',
+      writtenAt: null,
+      skills: [],
+      error: null,
+      controlFile: null,
+      controlFileExists: false,
+    })
+    const spy = vi.spyOn(mockApi, 'skillsEnableControl').mockResolvedValue({
+      backup: 'cordis.patch.yml.bak-1', ok: true, summary: '已启用注入控制(mock)', validated: true, error: null,
+    })
+    renderPage()
+    expect(await screen.findByText('尚未启用注入控制')).toBeInTheDocument()
+    const btn = screen.getByRole('button', { name: /启用注入控制/ })
+    await user.click(btn)
+    expect(spy).toHaveBeenCalledWith('web')
   })
 })

@@ -4,9 +4,12 @@ import {
   Eye,
   FileText,
   Pencil,
+  Plug,
+  PlugZap,
   Plus,
   RefreshCw,
   Search,
+  ShieldCheck,
   Sparkles,
   Trash2,
   X,
@@ -17,7 +20,15 @@ import { Input, Textarea } from '@/components/ui/input'
 import { useToast } from '@/components/ui/toast'
 import { api } from '@/hooks/use-app'
 import { cn } from '@/lib/utils'
-import type { SkillRoot, SkillSource, SkillSummary, SkillsSnapshot } from '@/types/schema'
+import type {
+  ActiveSkill,
+  SkillRoot,
+  SkillSource,
+  SkillSummary,
+  SkillsActiveSnapshot,
+  SkillsControlState,
+  SkillsSnapshot,
+} from '@/types/schema'
 
 const SOURCE_LABEL: Record<SkillSource, string> = {
   managed: '已管理',
@@ -295,12 +306,20 @@ const SOURCE_ORDER: SkillSource[] = ['managed', 'codex', 'claude', 'cursor', 'op
 /** 单张技能卡片。 */
 function SkillCard({
   skill,
+  injected,
+  injectChecked,
+  onToggleInject,
   onEdit,
   onDelete,
   onImport,
   onPreview,
 }: {
   skill: SkillSummary
+  /** 是否已注入运行中 dsh(与已启动清单去重标记)。 */
+  injected?: boolean
+  /** 注入开关当前值(未传则不显示开关)。 */
+  injectChecked?: boolean
+  onToggleInject?: (on: boolean) => void
   onEdit?: () => void
   onDelete?: () => void
   onImport?: () => void
@@ -320,6 +339,11 @@ function SkillCard({
               用户{skill.userInvocable ? '可调用' : '禁用'}
             </Badge>
             {skill.hasScripts && <Badge variant="primary">含资源</Badge>}
+            {injected !== undefined && (
+              <Badge variant={injected ? 'success' : 'warning'}>
+                {injected ? '已注入 ✓' : '未注入'}
+              </Badge>
+            )}
           </div>
           <p className="mt-1 line-clamp-2 text-xs text-muted-foreground" title={skill.description}>
             {skill.description}
@@ -331,6 +355,13 @@ function SkillCard({
             {skill.dir}
           </p>
         </div>
+        {onToggleInject && (
+          <InjectionSwitch
+            checked={injectChecked ?? true}
+            label={`注入 ${skill.name}`}
+            onToggle={onToggleInject}
+          />
+        )}
       </div>
       <div className="mt-2.5 flex items-center gap-1.5">
         <Button variant="ghost" size="sm" onClick={onPreview}><Eye /> 预览</Button>
@@ -351,10 +382,93 @@ function SkillCard({
   )
 }
 
+/** 注入开关:关闭 = 该技能默认不再注入 dsh(写控制文件,插件热更新)。 */
+function InjectionSwitch({
+  checked,
+  label,
+  onToggle,
+  disabled,
+}: {
+  checked: boolean
+  label: string
+  onToggle: (on: boolean) => void
+  disabled?: boolean
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      disabled={disabled}
+      onClick={() => onToggle(!checked)}
+      className={cn(
+        'relative h-5 w-9 shrink-0 rounded-full transition-colors duration-200 disabled:opacity-50',
+        checked ? 'bg-emerald-500' : 'bg-muted',
+      )}
+    >
+      <span
+        className={cn(
+          'absolute top-0.5 size-4 rounded-full bg-background shadow transition-all duration-200',
+          checked ? 'left-[18px]' : 'left-0.5',
+        )}
+      />
+    </button>
+  )
+}
+
+/** 已启动子界面的单条注入技能。 */
+function ActiveSkillCard({
+  skill,
+  onToggle,
+  toggling,
+}: {
+  skill: ActiveSkill
+  onToggle: (on: boolean) => void
+  toggling: boolean
+}) {
+  return (
+    <div className="rounded-xl border border-border bg-card p-3.5 transition-all duration-300 hover:border-border-hover">
+      <div className="flex items-start gap-2">
+        <PlugZap className="mt-0.5 size-4 shrink-0 text-emerald-500" />
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="font-mono text-sm font-semibold text-foreground">{skill.name}</span>
+            <Badge variant="success">已启动</Badge>
+            <Badge variant="neutral">模型{skill.modelInvocable ? '可调用' : '禁用'}</Badge>
+            <Badge variant="neutral">用户{skill.userInvocable ? '可调用' : '禁用'}</Badge>
+          </div>
+          <p className="mt-1 line-clamp-2 text-xs text-muted-foreground" title={skill.description}>
+            {skill.description}
+          </p>
+          {skill.whenToUse && (
+            <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">何时使用:{skill.whenToUse}</p>
+          )}
+          <p className="mt-1 truncate font-mono text-[10px] text-muted-foreground/70" title={skill.root}>
+            根:{skill.root}
+          </p>
+          <p className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground/50" title={skill.path}>
+            {skill.path}
+          </p>
+        </div>
+        <InjectionSwitch
+          checked
+          label={`关闭注入 ${skill.name}`}
+          onToggle={(on) => onToggle(on)}
+          disabled={toggling}
+        />
+      </div>
+    </div>
+  )
+}
+
 /** 技能管理子界面:独立管理增删改 + 自动扫描本机外部技能。 */
 export function SkillsPage() {
   const { toast } = useToast()
+  const [tab, setTab] = React.useState<'active' | 'discover'>('active')
   const [snap, setSnap] = React.useState<SkillsSnapshot | null>(null)
+  const [activeSnap, setActiveSnap] = React.useState<SkillsActiveSnapshot | null>(null)
+  const [control, setControl] = React.useState<SkillsControlState | null>(null)
   const [query, setQuery] = React.useState('')
   const [loading, setLoading] = React.useState(false)
   const [showCreate, setShowCreate] = React.useState(false)
@@ -362,12 +476,20 @@ export function SkillsPage() {
   const [showImport, setShowImport] = React.useState(false)
   const [previewing, setPreviewing] = React.useState<SkillSummary | null>(null)
   const [enabling, setEnabling] = React.useState<string | null>(null)
+  const [toggling, setToggling] = React.useState<string | null>(null)
   const [profileName, setProfileName] = React.useState('web')
 
   const load = React.useCallback(async () => {
     setLoading(true)
     try {
-      setSnap(await api.skillsGetSnapshot())
+      const [s, a, c] = await Promise.all([
+        api.skillsGetSnapshot(),
+        api.skillsGetActive(),
+        api.skillsGetControl(),
+      ])
+      setSnap(s)
+      setActiveSnap(a)
+      setControl(c)
     } catch (e) {
       toast({ kind: 'error', title: '技能扫描失败', detail: String(e) })
     } finally {
@@ -396,6 +518,12 @@ export function SkillsPage() {
       (s) => s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q),
     )
   }, [snap, query])
+
+  /** 去重:已启动清单的技能名集合(外部发现侧据此标记「已注入 ✓ / 未注入」)。 */
+  const injectedSet = React.useMemo(
+    () => new Set((activeSnap?.skills ?? []).map((s) => s.name)),
+    [activeSnap],
+  )
 
   const grouped = React.useMemo(() => {
     const map = new Map<SkillSource, SkillSummary[]>()
@@ -444,6 +572,43 @@ export function SkillsPage() {
     }
   }
 
+  /** 注入开关:关闭 = 该技能默认不再注入 dsh(写控制文件,插件约 1-2 秒热更新)。 */
+  const toggleSkill = async (name: string, on: boolean) => {
+    setToggling(name)
+    try {
+      const r = await api.skillsSetInjected(name, on)
+      if (r.ok) {
+        setControl((c) => (c ? { ...c, skills: { ...c.skills, [name]: on } } : c))
+        toast({ kind: 'success', title: on ? '已开启注入' : '已关闭注入', detail: r.summary })
+        // 插件 1.5s 轮询 + 重新收集 → active 清单约 3s 后更新
+        window.setTimeout(() => void load(), 3200)
+      } else {
+        toast({ kind: 'error', title: '开关失败', detail: r.summary })
+      }
+    } catch (e) {
+      toast({ kind: 'error', title: '开关失败', detail: String(e) })
+    } finally {
+      setToggling(null)
+    }
+  }
+
+  /** 一键启用注入控制:把 skillControlFile/activeFile 写进 skill-external-roots 行。 */
+  const enableControl = async () => {
+    try {
+      const r = await api.skillsEnableControl(profileName)
+      if (r.ok && r.validated) {
+        toast({ kind: 'success', title: '已启用注入控制', detail: 'skill-external-roots 已写入 skillControlFile/activeFile(已热重载)' })
+        void load()
+      } else {
+        toast({ kind: 'error', title: '启用失败', detail: r.error ?? r.summary })
+      }
+    } catch (e) {
+      toast({ kind: 'error', title: '启用失败', detail: String(e) })
+    }
+  }
+
+  const toggleFor = (name: string) => (on: boolean) => void toggleSkill(name, on)
+
   const renderSourceSection = (source: SkillSource) => {
     const skills = grouped.get(source) ?? []
     if (skills.length === 0 && source !== 'managed') return null
@@ -489,6 +654,9 @@ export function SkillsPage() {
             <SkillCard
               key={`${skill.source}:${skill.name}:${skill.path}`}
               skill={skill}
+              injected={injectedSet.has(skill.name)}
+              injectChecked={control?.skills[skill.name] ?? true}
+              onToggleInject={toggleFor(skill.name)}
               onPreview={() => setPreviewing(skill)}
               onEdit={source === 'managed' ? () => setEditing(skill) : undefined}
               onDelete={source === 'managed' ? () => void del(skill) : undefined}
@@ -509,7 +677,7 @@ export function SkillsPage() {
     }
   }
 
-  const managedRoot = snap?.roots.find((r) => r.key === 'managed')
+  const controlEnabled = activeSnap?.controlFile != null
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -517,6 +685,36 @@ export function SkillsPage() {
       <div className="flex shrink-0 items-center gap-2 border-b border-border bg-card/70 px-5 py-2.5">
         <Sparkles className="size-4 text-blue-500" />
         <span className="text-sm font-semibold">技能</span>
+
+        {/* 两个子界面:已启动 / 外部发现 */}
+        <div className="ml-1 flex items-center rounded-lg border border-border bg-muted/40 p-0.5">
+          <button
+            type="button"
+            onClick={() => setTab('active')}
+            className={cn(
+              'flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-colors',
+              tab === 'active' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
+            )}
+          >
+            <PlugZap className="size-3.5 text-emerald-500" />
+            已启动
+            <span className="rounded-full bg-emerald-500/10 px-1.5 text-[10px] text-emerald-600 dark:text-emerald-400">
+              {activeSnap?.skills.length ?? 0}
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab('discover')}
+            className={cn(
+              'flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-colors',
+              tab === 'discover' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
+            )}
+          >
+            <Search className="size-3.5" />
+            外部发现
+          </button>
+        </div>
+
         <div className="relative ml-2 max-w-xs flex-1">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
@@ -535,18 +733,27 @@ export function SkillsPage() {
       {snap && (
         <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-5 py-2 text-[11px] text-muted-foreground">
           {snap.pluginsInstalled ? (
-            <Badge variant="success">skill-external-roots 已安装:外部技能在模型侧可直接调用</Badge>
+            <Badge variant="success">skill-external-roots 已安装</Badge>
           ) : (
             <Badge variant="warning">未检测到 skill-external-roots 插件</Badge>
           )}
-          <span>扫描根:managed / codex / claude / cursor / opencode / agents / project / 自定义</span>
-          {snap.skipped.length > 0 && (
-            <span className="text-amber-500" title={snap.skipped.join('\n')}>
-              {snap.skipped.length} 个条目被跳过(悬停查看)
-            </span>
-          )}
-          {!managedRoot?.exists && (
-            <span className="text-amber-500">managed 根({managedRoot?.path})不存在,新建技能将自动创建</span>
+          {tab === 'active' ? (
+            <>
+              <Badge variant={controlEnabled ? 'success' : 'warning'}>
+                {controlEnabled ? '注入控制已启用' : '注入控制未启用'}
+              </Badge>
+              <span>关闭某技能的开关后,运行中的 dsh 约 1-2 秒内不再注入(无需重启)</span>
+            </>
+          ) : (
+            <>
+              <span>「已注入 ✓」= 运行中 dsh 实际加载(与已启动清单去重)</span>
+              <span>关闭开关 = 默认不注入 dsh</span>
+              {snap.skipped.length > 0 && (
+                <span className="text-amber-500" title={snap.skipped.join('\n')}>
+                  {snap.skipped.length} 个条目被跳过(悬停查看)
+                </span>
+              )}
+            </>
           )}
         </div>
       )}
@@ -554,11 +761,26 @@ export function SkillsPage() {
       {/* 内容 */}
       <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
         <div className="mx-auto flex max-w-[980px] flex-col gap-6">
-          {!snap && <p className="py-10 text-center text-sm text-muted-foreground">扫描中…</p>}
-          {snap && filtered.length === 0 && (
-            <p className="py-10 text-center text-sm text-muted-foreground">没有匹配的技能</p>
+          {tab === 'active' ? (
+            <ActiveSkillsView
+              activeSnap={activeSnap}
+              control={control}
+              controlEnabled={controlEnabled}
+              toggling={toggling}
+              onToggle={toggleSkill}
+              onEnableControl={enableControl}
+              onRefresh={() => void load()}
+              loading={loading}
+            />
+          ) : (
+            <>
+              {!snap && <p className="py-10 text-center text-sm text-muted-foreground">扫描中…</p>}
+              {snap && filtered.length === 0 && (
+                <p className="py-10 text-center text-sm text-muted-foreground">没有匹配的技能</p>
+              )}
+              {SOURCE_ORDER.map((source) => renderSourceSection(source))}
+            </>
           )}
-          {SOURCE_ORDER.map((source) => renderSourceSection(source))}
         </div>
       </div>
 
@@ -582,6 +804,105 @@ export function SkillsPage() {
         <ImportDialog onClose={() => setShowImport(false)} onDone={() => void load()} />
       )}
       {previewing && <PreviewDialog skill={previewing} onClose={() => setPreviewing(null)} />}
+    </div>
+  )
+}
+
+/** 「已启动」子界面:运行中 dsh 实际注入的技能清单(插件回写)。 */
+function ActiveSkillsView({
+  activeSnap,
+  control,
+  controlEnabled,
+  toggling,
+  onToggle,
+  onEnableControl,
+  onRefresh,
+  loading,
+}: {
+  activeSnap: SkillsActiveSnapshot | null
+  control: SkillsControlState | null
+  controlEnabled: boolean
+  toggling: string | null
+  onToggle: (name: string, on: boolean) => void
+  onEnableControl: () => void
+  onRefresh: () => void
+  loading: boolean
+}) {
+  if (!activeSnap) {
+    return <p className="py-10 text-center text-sm text-muted-foreground">加载中…</p>
+  }
+  const skills = activeSnap.skills
+  const writtenAt = activeSnap.writtenAt
+    ? new Date(activeSnap.writtenAt).toLocaleString()
+    : null
+  return (
+    <div className="flex flex-col gap-3">
+      {!controlEnabled && (
+        <div className="flex flex-wrap items-center gap-3 rounded-xl border border-amber-500/30 bg-amber-500/5 p-4">
+          <Plug className="size-5 shrink-0 text-amber-500" />
+          <div className="min-w-0 flex-1 text-xs text-muted-foreground">
+            <p className="font-medium text-foreground">尚未启用注入控制</p>
+            <p className="mt-0.5">
+              skill-external-roots 行未配置 <code className="font-mono">skillControlFile</code> /
+              <code className="font-mono">activeFile</code>,因此无法按技能开关、也无法回写已启动清单。
+              点击右侧按钮一键写入补丁(整行重述 + 校验 + 热重载)。
+            </p>
+          </div>
+          <Button size="sm" onClick={onEnableControl}>
+            <ShieldCheck className="size-4" /> 启用注入控制
+          </Button>
+        </div>
+      )}
+
+      {controlEnabled && (
+        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-card/60 px-4 py-2.5 text-[11px] text-muted-foreground">
+          <Badge variant="info">数据源:skill-external-roots 回写</Badge>
+          <span className="truncate font-mono" title={activeSnap.file}>{activeSnap.file}</span>
+          <span className="ml-auto flex items-center gap-2">
+            {writtenAt && <span>更新于 {writtenAt}</span>}
+            <Button variant="ghost" size="sm" className="h-6 px-2 text-[11px]" onClick={onRefresh} disabled={loading}>
+              <RefreshCw className={loading ? 'animate-spin' : 'size-3'} /> 刷新
+            </Button>
+          </span>
+        </div>
+      )}
+
+      {activeSnap.error && (
+        <div className="rounded-xl border border-red-500/30 bg-red-500/5 px-4 py-2.5 text-xs text-red-600 dark:text-red-400">
+          清单解析失败:{activeSnap.error}
+        </div>
+      )}
+
+      {controlEnabled && skills.length === 0 && !activeSnap.error && (
+        <div className="flex flex-col items-center gap-2 py-10 text-center text-sm text-muted-foreground">
+          <PlugZap className="size-6 text-muted-foreground/50" />
+          <p>暂无已启动技能</p>
+          <p className="max-w-md text-xs">
+            {activeSnap.controlFileExists
+              ? '控制文件存在但 dsh 尚未回写注入清单——请确认 dsh 正在运行,然后点「刷新」;若刚关闭全部技能,这是预期结果。'
+              : '控制文件尚未写入——在「外部发现」子界面打开任一技能开关后,运行中的 dsh 会在一两秒内完成注入并回写此清单。'}
+          </p>
+        </div>
+      )}
+
+      {skills.length > 0 && (
+        <div className="grid grid-cols-1 gap-2 xl:grid-cols-2">
+          {skills.map((skill) => (
+            <ActiveSkillCard
+              key={skill.name}
+              skill={skill}
+              onToggle={(on) => onToggle(skill.name, on)}
+              toggling={toggling === skill.name}
+            />
+          ))}
+        </div>
+      )}
+
+      <p className="px-1 text-[11px] text-muted-foreground/70">
+        说明:此清单由运行中 dsh 的 skill-external-roots 插件在每次收集后回写(内容变化才写)。关闭开关
+        后插件在约 1-2 秒内热更新,清单会随之下一次刷新消失;「外部发现」子界面的「已注入 ✓」标记同步
+        反映。(control 文件:{control?.file ?? '-'})
+      </p>
     </div>
   )
 }

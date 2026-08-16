@@ -790,3 +790,59 @@ pub async fn skills_enable_root(
     }
     r
 }
+
+/// 已启动技能清单(读 skill-external-roots v0.2 回写的 skills-active.json)。
+#[tauri::command]
+pub fn skills_get_active() -> crate::contract::SkillsActiveSnapshot {
+    let (ctx, profile) = skill_ctx();
+    crate::services::skills::active_snapshot(&ctx, &profile)
+}
+
+/// 注入控制文件状态(当前各技能的注入开关)。
+#[tauri::command]
+pub fn skills_get_control() -> crate::contract::SkillsControlState {
+    let (ctx, _profile) = skill_ctx();
+    crate::services::skills::control_state(&ctx)
+}
+
+/// 技能注入开关:关闭 = 运行中 dsh 不再注入该技能(写控制文件,插件热更新)。
+#[tauri::command]
+pub fn skills_set_injected(
+    app: AppHandle,
+    name: String,
+    enabled: bool,
+    state: State<'_, Arc<AppState>>,
+) -> Result<crate::contract::SkillToggleResult, String> {
+    let (ctx, _profile) = skill_ctx();
+    let r = crate::services::skills::set_injected(&state.log_hub, &ctx, &name, enabled);
+    if r.is_ok() {
+        emit_skills_changed(&app);
+    }
+    r
+}
+
+/// 一键启用注入控制:把 skillControlFile/activeFile 写进 skill-external-roots 行
+/// (整行重述 + dump-config 校验 + HMR),之后插件才读写控制/active 文件。
+#[tauri::command]
+pub async fn skills_enable_control(
+    app: AppHandle,
+    profile: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<crate::contract::PatchWriteResult, String> {
+    let (ctx, default_profile) = plugin_write_ctx(&state);
+    let profile = nonempty_profile(&profile, &default_profile);
+    let home = crate::services::plugins::dsh_home_dir(&ctx.dsh_home_setting);
+    let control_file = crate::services::skills::control_file(&home);
+    let active_file = crate::services::skills::active_file(&home);
+    let r = crate::services::plugins::enable_skill_control(
+        &state.log_hub,
+        &ctx,
+        &profile,
+        &control_file.to_string_lossy(),
+        &active_file.to_string_lossy(),
+    );
+    if r.is_ok() {
+        emit_skills_changed(&app);
+    }
+    r
+}

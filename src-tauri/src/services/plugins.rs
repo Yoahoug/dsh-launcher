@@ -1040,6 +1040,53 @@ pub fn enable_skill_root(
     )
 }
 
+/// 一键启用注入控制:把 skillControlFile/activeFile 写进 skill-external-roots 行
+/// (id-targeted,整行重述既有键;行被上层停用时一并强制启用)。
+pub fn enable_skill_control(
+    log: &Arc<LogHub>,
+    ctx: &WriteCtx,
+    profile: &str,
+    control_file: &str,
+    active_file: &str,
+) -> Result<PatchWriteResult, String> {
+    let home = dsh_home_dir(&ctx.dsh_home_setting);
+    let patch_path = profile_patch_path(&home, profile);
+    let existed = patch_path.exists();
+    let doc = read_patch_doc(&patch_path);
+    let rows = ctx.dump(profile)?;
+    let row = rows.iter().find(|r| r.id == "skill-external-roots");
+    if let Some(r) = row {
+        if r.block.contains("!!js") {
+            return Err("skill-external-roots 行含 !!js 表达式,请手动编辑补丁".into());
+        }
+    }
+    let current: serde_json::Value = row
+        .and_then(|r| extract_config(&r.block, false))
+        .unwrap_or_else(|| serde_json::json!({}));
+    let mut cfg = match current {
+        serde_json::Value::Object(m) => m,
+        _ => serde_json::Map::new(),
+    };
+    cfg.insert("skillControlFile".into(), serde_json::json!(control_file));
+    cfg.insert("activeFile".into(), serde_json::json!(active_file));
+    let (doc, changed, summary) = apply_save_config_form(
+        &doc,
+        "skill-external-roots",
+        &serde_json::Value::Object(cfg),
+        false,
+    );
+    write_patch_validated(
+        log,
+        &ctx.tools,
+        &ctx.repo_path,
+        &ctx.dsh_home_setting,
+        profile,
+        &final_text(&doc, existed),
+        changed,
+        summary,
+    )
+}
+
 // ── dsh-plugins 扫描 ──────────────────────────────────────
 
 /// 扫描 <dshPluginsPath>/packages/* 的包清单。

@@ -433,6 +433,32 @@ bundle 行不扫描整个仓库读 README(避免慢),UI 展示模块名与来源
 - UI:`pnpm test:ui`(54 例)新增 `plugins.test.tsx` / `skills.test.tsx`(分组/启停开关/表单保存/
   raw-yaml 锁定/新建校验/删除确认/导入/一键启用)。
 
+### 11.9 技能注入控制(0.8.1 追加)
+
+用户反馈:dsh 官方自动发现本机全部技能导致无法精准控制注入。新增「注入控制」闭环
+(launcher 0.8.1 + skill-external-roots v0.2,双仓联动):
+
+- **机制**:launcher 写 `$DSH_HOME/skills-control.json`(per-skill 开关),插件 `list()` 时
+  mtime 缓存读取并过滤(`roots.<family>=false` 整族不探测,与 Config `enabled` 取与;
+  `skills.<name>=false` 按名剔除,与 `exclude` 合并);控制文件 1.5s 轮询 watch →
+  `invalidate()` → 运行中 dsh 无需重启即热更新;`list()` 后把过滤后候选原子回写
+  `$DSH_HOME/state/skills-active.json`(内容去重)。
+- **契约新增**(contract.rs ↔ schema.ts 双向):`ActiveSkill` / `SkillsActiveSnapshot`
+  (含 `controlFile`/`controlFileExists`)/ `SkillsControlState` / `SkillToggleResult`。
+- **新命令**:`skills_get_active` / `skills_get_control` / `skills_set_injected(name, enabled)`
+  (kebab 校验 + 原子写 + 广播 skills-changed)/ `skills_enable_control`(整行重述
+  skill-external-roots 行写入 skillControlFile/activeFile,dump-config 校验,!!js 行拒绝)。
+- **UI**:技能页拆「已启动 / 外部发现」两个子界面(segmented control);已启动 = 插件回写清单
+  (开关关闭立即热更新,约 1-2s 生效);外部发现与已启动**去重**(「已注入 ✓ / 未注入」徽章);
+  每卡注入开关;未启用控制时引导一键启用。
+- **行为说明**:active 回写是惰性的——dsh 在技能收集(模型查询/技能面板)时触发;新装 v0.2
+  后需 dsh 重启或一次交互才会出现首个清单;UI 空态已引导(刷新 + 与 dsh 交互)。
+- **实测**:真实 web profile 补丁整行重述 skillControlFile/activeFile + dump-config 校验通过
+  (运行中 dsh HMR 拾取,备份保留 `.bak-injectctl-*`)。
+- **测试**:Rust +2(控制文件原子写与解析 / active 解析与控制配置检测)、UI +3(已启动默认子界面
+  开关关闭 / 外部发现去重徽章与开关 / 未启用引导);插件侧 v0.2 +4(技能/族过滤、active 回写、
+  文件变化 invalidate、缺失降级 v1)。
+
 ---
 
 ## 12. 相关文档

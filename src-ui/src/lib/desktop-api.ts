@@ -25,7 +25,10 @@ import {
   type PluginsSnapshot,
   type SettingsSnapshot,
   type SkillSummary,
+  type SkillsActiveSnapshot,
+  type SkillsControlState,
   type SkillsSnapshot,
+  type SkillToggleResult,
   type UpdateCheckResult,
   type Workspace,
 } from '@/types/schema'
@@ -119,6 +122,14 @@ export interface DesktopApi {
   skillsImport(sourcePath: string, name?: string | null): Promise<SkillSummary>
   skillsPreview(sourcePath: string): Promise<string>
   skillsEnableRoot(profile: string, rootPath: string): Promise<PatchWriteResult>
+  /** 已启动技能清单(读 skill-external-roots v0.2 回写的 skills-active.json)。 */
+  skillsGetActive(): Promise<SkillsActiveSnapshot>
+  /** 注入控制文件状态(当前各技能的注入开关)。 */
+  skillsGetControl(): Promise<SkillsControlState>
+  /** 技能注入开关:关闭 = 运行中 dsh 不再注入该技能。 */
+  skillsSetInjected(name: string, enabled: boolean): Promise<SkillToggleResult>
+  /** 一键启用注入控制:把 skillControlFile/activeFile 写进 skill-external-roots 行。 */
+  skillsEnableControl(profile: string): Promise<PatchWriteResult>
   onSkillsChanged(cb: () => void): Promise<UnlistenFn>
 }
 
@@ -188,5 +199,9 @@ export const desktopApi: DesktopApi = {
   skillsImport: (sourcePath, name) => invoke('skills_import', { sourcePath, name }),
   skillsPreview: (sourcePath) => invoke('skills_preview', { sourcePath }),
   skillsEnableRoot: (profile, rootPath) => invoke('skills_enable_root', { profile, rootPath }),
+  skillsGetActive: () => invoke('skills_get_active'),
+  skillsGetControl: () => invoke('skills_get_control'),
+  skillsSetInjected: (name, enabled) => invoke('skills_set_injected', { name, enabled }),
+  skillsEnableControl: (profile) => invoke('skills_enable_control', { profile }),
   onSkillsChanged: (cb) => listen(EVENTS.SKILLS_CHANGED, () => cb()),
 }

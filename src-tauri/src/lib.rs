@@ -113,6 +113,10 @@ pub fn run() {
             commands::skills_import,
             commands::skills_preview,
             commands::skills_enable_root,
+            commands::skills_get_active,
+            commands::skills_get_control,
+            commands::skills_set_injected,
+            commands::skills_enable_control,
         ])
         .setup(move |app| {
             let app_handle = app.handle().clone();

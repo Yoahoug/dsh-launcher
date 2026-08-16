@@ -648,6 +648,55 @@ pub struct SkillsSnapshot {
     pub skipped: Vec<String>,
 }
 
+/// 运行中 dsh 插件回写的「实际注入」技能清单条目(skills-active.json)。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveSkill {
+    pub name: String,
+    pub description: String,
+    pub when_to_use: Option<String>,
+    /// 来源桶(插件固定 'external')。
+    pub source: String,
+    /// 该技能所在根目录(绝对路径)。
+    pub root: String,
+    pub path: String,
+    pub model_invocable: bool,
+    pub user_invocable: bool,
+}
+
+/// 已启动技能清单快照(技能页「已启动」子界面)。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillsActiveSnapshot {
+    pub file: String,
+    pub written_at: Option<i64>,
+    pub skills: Vec<ActiveSkill>,
+    /// 读取/解析失败诊断(null = 正常)。
+    pub error: Option<String>,
+    /// 目标 profile 补丁里 skill-external-roots 行配置的 skillControlFile。
+    pub control_file: Option<String>,
+    pub control_file_exists: bool,
+}
+
+/// 注入控制文件状态(启动器写,插件读)。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillsControlState {
+    pub file: String,
+    pub version: u32,
+    pub roots: std::collections::BTreeMap<String, bool>,
+    pub skills: std::collections::BTreeMap<String, bool>,
+}
+
+/// 注入开关写入结果。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillToggleResult {
+    pub ok: bool,
+    pub summary: String,
+    pub enabled: bool,
+}
+
 impl AppSnapshot {
     /// M1 mock:空闲快照(M2 由 bridge 提供真实数据)。
     pub fn mock_idle() -> Self {
@@ -834,6 +883,45 @@ mod tests {
     #[test]
     fn skills_changed_event_constant() {
         assert_eq!(EVENT_SKILLS_CHANGED, "app://skills-changed");
+    }
+
+    #[test]
+    fn active_and_control_types_serde() {
+        let active = SkillsActiveSnapshot {
+            file: "/Users/u/.dsh/state/skills-active.json".into(),
+            written_at: Some(1723800000000),
+            skills: vec![ActiveSkill {
+                name: "tavily-extract".into(),
+                description: "d".into(),
+                when_to_use: Some("w".into()),
+                source: "external".into(),
+                root: "/Users/u/.claude/skills".into(),
+                path: "/Users/u/.claude/skills/tavily-extract/SKILL.md".into(),
+                model_invocable: true,
+                user_invocable: true,
+            }],
+            error: None,
+            control_file: Some("/Users/u/.dsh/skills-control.json".into()),
+            control_file_exists: true,
+        };
+        let j = serde_json::to_string(&active).unwrap();
+        assert!(j.contains("\"writtenAt\""), "{j}");
+        assert!(j.contains("\"whenToUse\":\"w\""), "{j}");
+        assert!(j.contains("\"modelInvocable\":true"), "{j}");
+        assert!(j.contains("\"controlFileExists\":true"), "{j}");
+        let back: SkillsActiveSnapshot = serde_json::from_str(&j).unwrap();
+        assert_eq!(back, active);
+
+        let ctl = SkillsControlState {
+            file: "/Users/u/.dsh/skills-control.json".into(),
+            version: 1,
+            roots: std::collections::BTreeMap::from([("codex".into(), true)]),
+            skills: std::collections::BTreeMap::from([("win-host".into(), false)]),
+        };
+        let cj = serde_json::to_string(&ctl).unwrap();
+        assert!(cj.contains("\"version\":1"), "{cj}");
+        let back: SkillsControlState = serde_json::from_str(&cj).unwrap();
+        assert_eq!(back, ctl);
     }
 
     #[test]

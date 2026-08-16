@@ -484,6 +484,47 @@ export interface SkillsSnapshot {
   skipped: string[]
 }
 
+/** 运行中 dsh 插件回写的「实际注入」技能清单条目(skills-active.json)。 */
+export interface ActiveSkill {
+  name: string
+  description: string
+  whenToUse: string | null
+  /** 来源桶(插件固定 'external')。 */
+  source: string
+  /** 该技能所在根目录(绝对路径)。 */
+  root: string
+  path: string
+  modelInvocable: boolean
+  userInvocable: boolean
+}
+
+/** 已启动技能清单快照(技能页「已启动」子界面)。 */
+export interface SkillsActiveSnapshot {
+  file: string
+  writtenAt: number | null
+  skills: ActiveSkill[]
+  /** 读取/解析失败诊断(null = 正常)。 */
+  error: string | null
+  /** 目标 profile 补丁里 skill-external-roots 行配置的 skillControlFile。 */
+  controlFile: string | null
+  controlFileExists: boolean
+}
+
+/** 注入控制文件状态(启动器写,插件读)。 */
+export interface SkillsControlState {
+  file: string
+  version: number
+  roots: Record<string, boolean>
+  skills: Record<string, boolean>
+}
+
+/** 注入开关写入结果。 */
+export interface SkillToggleResult {
+  ok: boolean
+  summary: string
+  enabled: boolean
+}
+
 /** 事件 payload 名(与 Rust emit 的 event 名对齐)。 */
 export const EVENTS = {
   STATE_CHANGED: 'app://state-changed',
