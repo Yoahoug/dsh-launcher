@@ -743,19 +743,13 @@ fn patch_skill_control_file(dsh_home: &Path, profile: &str) -> Option<String> {
     let path = plugins::profile_patch_path(dsh_home, profile);
     let text = std::fs::read_to_string(&path).ok()?;
     let doc = plugins::split_patch_doc(&text);
-    for e in doc.entries {
-        if e.id != "skill-external-roots" {
-            continue;
-        }
-        if let Some(v) = plugins::extract_config(&e.block, e.block.contains("!!js")) {
-            if let Some(s) = v.get("skillControlFile").and_then(|x| x.as_str()) {
-                if !s.is_empty() {
-                    return Some(s.to_string());
-                }
-            }
-        }
+    let block = plugins::entry_block(&doc, "skill-external-roots")?;
+    let v = plugins::extract_config(&block, block.contains("!!js"))?;
+    let s = v.get("skillControlFile").and_then(|x| x.as_str())?;
+    if s.is_empty() {
+        return None;
     }
-    None
+    Some(s.to_string())
 }
 
 /// 已启动技能清单快照(读插件回写的 skills-active.json + 控制配置状态)。

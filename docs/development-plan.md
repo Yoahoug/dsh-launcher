@@ -458,6 +458,14 @@ bundle 行不扫描整个仓库读 README(避免慢),UI 展示模块名与来源
 - **测试**:Rust +2(控制文件原子写与解析 / active 解析与控制配置检测)、UI +3(已启动默认子界面
   开关关闭 / 外部发现去重徽章与开关 / 未启用引导);插件侧 v0.2 +4(技能/族过滤、active 回写、
   文件变化 invalidate、缺失降级 v1)。
+- **0.8.2 修复:insert 数组内子条目定位**(实测发现):`dsh plugin add` 安装的插件行位于顶层
+  `- insert:` 数组内(缩进 4),原 `split_patch_doc` 只认零缩进顶层条目 → 这些插件的
+  `skillControlFile`/`activeFile` 检测、整行重述、启停、重置全部失效(技能页显示「注入控制未启用」)。
+  新增 `locate_entry`(顶层优先 + insert 子条目)/`child_span`/`replace_child_block`/
+  `remove_child_block`/`child_append_disabled`/`child_drop_disabled`/`child_name_line`(重述保留
+  name 模块名)等辅助,`apply_set_enabled`/`apply_save_config_form`/`apply_save_config_raw`/
+  `apply_reset_row`/`patch_skill_control_file` 全部支持 insert 子条目;+5 单测(定位/表单重述
+  保 name/启停 disabled 行/重置移除/raw 重述),真实 web 补丁解析验证通过。
 
 ---
 

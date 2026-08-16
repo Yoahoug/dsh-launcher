@@ -252,10 +252,148 @@ pub fn reassemble(doc: &PatchDoc) -> String {
     out
 }
 
-fn entry_index(doc: &PatchDoc, id: &str) -> Option<usize> {
-    doc.entries
-        .iter()
-        .position(|e| e.id == id && e.block.starts_with("- id:"))
+/// 条目定位:顶层条目,或顶层 `- insert:` 数组内的缩进子条目
+/// (如 `dsh plugin add` 安装的插件行)。child = 子条目在 insert 块中的起始行号。
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct EntryLoc {
+    entry: usize,
+    child: Option<usize>,
+}
+
+/// 在补丁中定位条目(顶层优先,其次 insert 数组内子条目)。
+fn locate_entry(doc: &PatchDoc, id: &str) -> Option<EntryLoc> {
+    for (i, e) in doc.entries.iter().enumerate() {
+        if e.id == id && e.block.starts_with("- id:") {
+            return Some(EntryLoc {
+                entry: i,
+                child: None,
+            });
+        }
+    }
+    for (i, e) in doc.entries.iter().enumerate() {
+        if e.id == "insert" && e.block.starts_with("- insert:") {
+            if let Some(line) = block_child_line(&e.block, id) {
+                return Some(EntryLoc {
+                    entry: i,
+                    child: Some(line),
+                });
+            }
+        }
+    }
+    None
+}
+
+/// 在块文本中定位缩进子条目 `  - id: <id>`(非零缩进)的起始行号。
+fn block_child_line(block: &str, id: &str) -> Option<usize> {
+    for (idx, line) in block.lines().enumerate() {
+        if line.starts_with("- id:") || line.starts_with("- insert:") {
+            continue; // 顶层行
+        }
+        let t = line.trim_start();
+        if t.starts_with("- id:") {
+            let got = t
+                .trim_start_matches("- id:")
+                .split_whitespace()
+                .next()
+                .unwrap_or("");
+            if got == id {
+                return Some(idx);
+            }
+        }
+    }
+    None
+}
+
+/// 子条目行段 [start, end):到下一个同缩进 `- id:` 或缩进更小的非空行/块边界。
+fn child_span(lines: &[String], start: usize) -> (usize, usize) {
+    let indent = lines[start].len() - lines[start].trim_start().len();
+    let mut end = lines.len();
+    for (i, line) in lines.iter().enumerate().skip(start + 1) {
+        let t = line.trim_start();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        let ind = line.len() - t.len();
+        if ind <= indent {
+            end = i;
+            break;
+        }
+    }
+    (start, end)
+}
+
+fn line_indent(line: &str) -> usize {
+    line.len() - line.trim_start().len()
+}
+
+/// 从 insert 子条目行段提取 `name:` 行内容(无缩进),供整行重述时保留模块名。
+fn child_name_line(block: &str, id: &str) -> Option<String> {
+    let start = block_child_line(block, id)?;
+    let lines: Vec<String> = block.lines().map(String::from).collect();
+    let indent = line_indent(&lines[start]);
+    let (_, end) = child_span(&lines, start);
+    for l in &lines[start..end] {
+        let t = l.trim();
+        if t.starts_with("name:") && line_indent(l) > indent {
+            return Some(t.to_string());
+        }
+    }
+    None
+}
+
+/// 把子条目行段整体替换为 new_block(重新缩进到子条目缩进级别)。
+fn replace_child_block(block: &str, id: &str, new_block: &str) -> Option<String> {
+    let lines: Vec<String> = block.lines().map(String::from).collect();
+    let start = block_child_line(block, id)?;
+    let indent = line_indent(&lines[start]);
+    let (_, end) = child_span(&lines, start);
+    let mut out: Vec<String> = lines[..start].to_vec();
+    for l in new_block.lines() {
+        if l.trim().is_empty() {
+            out.push(l.to_string());
+        } else {
+            out.push(format!("{}{}", " ".repeat(indent), l));
+        }
+    }
+    out.extend_from_slice(&lines[end..]);
+    Some(out.join("\n"))
+}
+
+/// 从 insert 块中删除子条目(连同其正上方的注释前缀与空行)。
+fn remove_child_block(block: &str, id: &str) -> Option<String> {
+    let lines: Vec<String> = block.lines().map(String::from).collect();
+    let start = block_child_line(block, id)?;
+    let indent = line_indent(&lines[start]);
+    let (_, end) = child_span(&lines, start);
+    let mut out: Vec<String> = lines[..start].to_vec();
+    // 向上清理子条目前导注释(缩进 >= 子条目)与空行
+    while let Some(last) = out.last() {
+        let t = last.trim();
+        if t.is_empty() || (t.starts_with('#') && line_indent(last) >= indent) {
+            out.pop();
+        } else {
+            break;
+        }
+    }
+    out.extend_from_slice(&lines[end..]);
+    Some(out.join("\n"))
+}
+
+/// 返回条目完整行块:顶层条目直接返回 block;insert 数组内子条目返回其行段
+/// (含缩进,供 extract_config / 诊断使用)。
+pub fn entry_block(doc: &PatchDoc, id: &str) -> Option<String> {
+    match locate_entry(doc, id) {
+        Some(EntryLoc { entry, child: None }) => Some(doc.entries[entry].block.clone()),
+        Some(EntryLoc {
+            entry,
+            child: Some(start),
+        }) => {
+            let lines: Vec<String> = doc.entries[entry].block.lines().map(String::from).collect();
+            let (_, end) = child_span(&lines, start);
+            Some(lines[start..end].join("\n"))
+        }
+        None => None,
+    }
 }
 
 fn block_lines(block: &str) -> Vec<String> {
@@ -278,46 +416,78 @@ pub fn apply_set_enabled(
     effective_disabled: bool,
 ) -> (PatchDoc, bool, String) {
     let mut next = doc.clone();
-    let idx = entry_index(&next, id);
+    let loc = locate_entry(&next, id);
     let mut changed = false;
     if enabled {
         // 启用:移除用户条目里的 disabled:true;若停用来自非用户层,写显式 disabled:false 覆盖
-        let had_user_disable = idx
-            .and_then(|i| next.entries.get(i))
-            .is_some_and(|e| entry_has_disabled_true(&e.block));
+        let had_user_disable = match loc {
+            Some(EntryLoc { entry, child: None }) => {
+                entry_has_disabled_true(&next.entries[entry].block)
+            }
+            Some(EntryLoc {
+                entry,
+                child: Some(_),
+            }) => child_has_disabled_true(&next.entries[entry].block, id),
+            None => false,
+        };
         if had_user_disable {
-            if let Some(i) = idx {
-                let e = &mut next.entries[i];
-                let lines: Vec<String> = block_lines(&e.block)
-                    .into_iter()
-                    .filter(|l| l != "  disabled: true")
-                    .collect();
-                if lines.len() <= 1 {
-                    // 仅剩 `- id:` 一行:整条移除(语义 = 移除该字段)
-                    next.entries.remove(i);
-                } else {
-                    e.block = lines_to_block(lines);
+            match loc {
+                Some(EntryLoc { entry, child: None }) => {
+                    let e = &mut next.entries[entry];
+                    let lines: Vec<String> = block_lines(&e.block)
+                        .into_iter()
+                        .filter(|l| l != "  disabled: true")
+                        .collect();
+                    if lines.len() <= 1 {
+                        // 仅剩 `- id:` 一行:整条移除(语义 = 移除该字段)
+                        next.entries.remove(entry);
+                    } else {
+                        e.block = lines_to_block(lines);
+                    }
+                    changed = true;
                 }
-                changed = true;
+                Some(EntryLoc {
+                    entry,
+                    child: Some(_),
+                }) => {
+                    if let Some(nb) = child_drop_disabled(&next.entries[entry].block, id) {
+                        next.entries[entry].block = nb;
+                    }
+                    changed = true;
+                }
+                None => {}
             }
         }
         if !had_user_disable && effective_disabled {
             // 停用来自 bundle/home 层:必须写 disabled:false 显式覆盖
-            if let Some(i) = idx {
-                let e = &mut next.entries[i];
-                if !e.block.ends_with('\n') {
-                    e.block.push('\n');
+            match loc {
+                Some(EntryLoc { entry, child: None }) => {
+                    let e = &mut next.entries[entry];
+                    if !e.block.ends_with('\n') {
+                        e.block.push('\n');
+                    }
+                    e.block.push_str("  disabled: false");
+                    changed = true;
                 }
-                e.block.push_str("  disabled: false");
-            } else {
-                next.entries.push(PatchEntry {
-                    id: id.to_string(),
-                    prefix: String::new(),
-                    block: format!("- id: {id}\n  disabled: false"),
-                    has_js: false,
-                });
+                Some(EntryLoc {
+                    entry,
+                    child: Some(_),
+                }) => {
+                    if let Some(nb) = child_append_disabled(&next.entries[entry].block, id, false) {
+                        next.entries[entry].block = nb;
+                    }
+                    changed = true;
+                }
+                None => {
+                    next.entries.push(PatchEntry {
+                        id: id.to_string(),
+                        prefix: String::new(),
+                        block: format!("- id: {id}\n  disabled: false"),
+                        has_js: false,
+                    });
+                    changed = true;
+                }
             }
-            changed = true;
         }
         if !changed {
             return (next, false, format!("{id} 已启用,无需修改"));
@@ -325,25 +495,104 @@ pub fn apply_set_enabled(
         (next, true, format!("{id} 已启用(写 profile patch 覆盖)"))
     } else {
         // 停用
-        if let Some(i) = idx {
-            let e = &mut next.entries[i];
-            if entry_has_disabled_true(&e.block) {
-                return (next, false, format!("{id} 已停用,无需修改"));
+        match loc {
+            Some(EntryLoc { entry, child: None }) => {
+                let e = &mut next.entries[entry];
+                if entry_has_disabled_true(&e.block) {
+                    return (next, false, format!("{id} 已停用,无需修改"));
+                }
+                if !e.block.ends_with('\n') {
+                    e.block.push('\n');
+                }
+                e.block.push_str("  disabled: true");
             }
-            if !e.block.ends_with('\n') {
-                e.block.push('\n');
+            Some(EntryLoc {
+                entry,
+                child: Some(_),
+            }) => {
+                if child_has_disabled_true(&next.entries[entry].block, id) {
+                    return (next, false, format!("{id} 已停用,无需修改"));
+                }
+                if let Some(nb) = child_append_disabled(&next.entries[entry].block, id, true) {
+                    next.entries[entry].block = nb;
+                }
             }
-            e.block.push_str("  disabled: true");
-        } else {
-            next.entries.push(PatchEntry {
-                id: id.to_string(),
-                prefix: String::new(),
-                block: format!("- id: {id}\n  disabled: true"),
-                has_js: false,
-            });
+            None => {
+                next.entries.push(PatchEntry {
+                    id: id.to_string(),
+                    prefix: String::new(),
+                    block: format!("- id: {id}\n  disabled: true"),
+                    has_js: false,
+                });
+            }
         }
         (next, true, format!("{id} 已停用(写 profile patch 覆盖)"))
     }
+}
+
+/// insert 子条目的 disabled 行是否已存在(缩进 = 子条目缩进 + 2)。
+fn child_has_disabled_true(block: &str, id: &str) -> bool {
+    let Some(start) = block_child_line(block, id) else {
+        return false;
+    };
+    let lines: Vec<&str> = block.lines().collect();
+    let indent = line_indent(lines[start]);
+    let (_, end) = child_span(
+        &lines.iter().map(|l| l.to_string()).collect::<Vec<_>>(),
+        start,
+    );
+    lines[start..end]
+        .iter()
+        .any(|l| l.trim() == "disabled: true" && line_indent(l) > indent)
+}
+
+/// 在 insert 子条目行段末尾追加 disabled 行(或移除已有 disabled 行)。
+fn child_append_disabled(block: &str, id: &str, value: bool) -> Option<String> {
+    let mut lines: Vec<String> = block.lines().map(String::from).collect();
+    let start = block_child_line(block, id)?;
+    let indent = line_indent(&lines[start]);
+    let (_, end) = child_span(&lines, start);
+    let has_disabled = lines[start..end]
+        .iter()
+        .any(|l| l.trim().starts_with("disabled:") && line_indent(l) > indent);
+    if has_disabled {
+        return Some(block.to_string());
+    }
+    let last_line = lines[end - 1].clone();
+    let suffix = if last_line.trim().is_empty() {
+        String::new()
+    } else {
+        "\n".to_string()
+    };
+    lines.insert(
+        end,
+        format!("{}{}disabled: {}", suffix, " ".repeat(indent + 2), value),
+    );
+    Some(lines.join("\n"))
+}
+
+/// 移除 insert 子条目行段内的 disabled 行。
+fn child_drop_disabled(block: &str, id: &str) -> Option<String> {
+    let lines: Vec<String> = block.lines().map(String::from).collect();
+    let start = block_child_line(block, id)?;
+    let indent = line_indent(&lines[start]);
+    let (_, end) = child_span(&lines, start);
+    let mut kept: Vec<String> = Vec::new();
+    let mut removed = false;
+    for l in &lines[start..end] {
+        if l.trim().starts_with("disabled:") && line_indent(l) > indent {
+            removed = true;
+            continue;
+        }
+        kept.push(l.clone());
+    }
+    if !removed {
+        return Some(block.to_string());
+    }
+    let mut out: Vec<String> = lines[..start].to_vec();
+    out.extend(kept);
+    out.extend_from_slice(&lines[end..]);
+    Some(out.join("\n"))
 }
 
 /// 生成 id-targeted patch 条目块(form 模式)。config 为空对象时省略 config 段。
@@ -375,21 +624,41 @@ pub fn apply_save_config_form(
     let block = build_form_block(id, config, effective_disabled);
     let has_js = block.contains("!!js");
     let changed = true;
-    if let Some(i) = entry_index(&next, id) {
-        let prefix = next.entries[i].prefix.clone();
-        next.entries[i] = PatchEntry {
-            id: id.to_string(),
-            prefix,
-            block,
-            has_js,
-        };
-    } else {
-        next.entries.push(PatchEntry {
-            id: id.to_string(),
-            prefix: String::new(),
-            block,
-            has_js,
-        });
+    match locate_entry(&next, id) {
+        Some(EntryLoc { entry, child: None }) => {
+            let prefix = next.entries[entry].prefix.clone();
+            next.entries[entry] = PatchEntry {
+                id: id.to_string(),
+                prefix,
+                block,
+                has_js,
+            };
+        }
+        Some(EntryLoc {
+            entry,
+            child: Some(_),
+        }) => {
+            // insert 数组内子条目:整行重述(保持缩进,保留 name 模块名)
+            let old_block = next.entries[entry].block.clone();
+            let mut merged = block.clone();
+            if let Some(name_line) = child_name_line(&old_block, id) {
+                // name 行缩进 = 子条目缩进 + 2(replace_child_block 再补子条目缩进)
+                let mut lines: Vec<String> = merged.lines().map(String::from).collect();
+                lines.insert(1, format!("  {name_line}"));
+                merged = lines.join("\n");
+            }
+            if let Some(nb) = replace_child_block(&old_block, id, &merged) {
+                next.entries[entry].block = nb;
+            }
+        }
+        None => {
+            next.entries.push(PatchEntry {
+                id: id.to_string(),
+                prefix: String::new(),
+                block,
+                has_js,
+            });
+        }
     }
     let summary = format!("{id} 的 config 已固化整行(非深合并)");
     (next, changed, summary)
@@ -416,21 +685,32 @@ pub fn apply_save_config_raw(
     }
     let block = raw_yaml.trim_end().to_string();
     let mut next = doc.clone();
-    if let Some(i) = entry_index(&next, id) {
-        let prefix = next.entries[i].prefix.clone();
-        next.entries[i] = PatchEntry {
-            id: id.to_string(),
-            prefix,
-            block: block.clone(),
-            has_js: block.contains("!!js"),
-        };
-    } else {
-        next.entries.push(PatchEntry {
-            id: id.to_string(),
-            prefix: String::new(),
-            block: block.clone(),
-            has_js: block.contains("!!js"),
-        });
+    match locate_entry(&next, id) {
+        Some(EntryLoc { entry, child: None }) => {
+            let prefix = next.entries[entry].prefix.clone();
+            next.entries[entry] = PatchEntry {
+                id: id.to_string(),
+                prefix,
+                block: block.clone(),
+                has_js: block.contains("!!js"),
+            };
+        }
+        Some(EntryLoc {
+            entry,
+            child: Some(_),
+        }) => {
+            if let Some(nb) = replace_child_block(&next.entries[entry].block, id, &block) {
+                next.entries[entry].block = nb;
+            }
+        }
+        None => {
+            next.entries.push(PatchEntry {
+                id: id.to_string(),
+                prefix: String::new(),
+                block: block.clone(),
+                has_js: block.contains("!!js"),
+            });
+        }
     }
     Ok((
         next,
@@ -442,24 +722,42 @@ pub fn apply_save_config_raw(
 /// reset 纯逻辑:移除用户 patch 中的该行条目(回落 bundle/home 层)。
 pub fn apply_reset_row(doc: &PatchDoc, id: &str) -> (PatchDoc, bool, String) {
     let mut next = doc.clone();
-    let Some(i) = entry_index(&next, id) else {
+    let Some(loc) = locate_entry(&next, id) else {
         return (next, false, format!("{id} 没有用户补丁条目,无需重置"));
     };
-    // 前导注释保留(追加到末尾,避免丢注释)
-    let prefix = next.entries[i].prefix.clone();
-    let removed = next.entries.remove(i);
-    if !prefix.is_empty() {
-        if next.trailing.is_empty() {
-            next.trailing = prefix;
-        } else {
-            next.trailing = format!("{prefix}\n{}", next.trailing);
+    match loc {
+        EntryLoc { entry, child: None } => {
+            // 前导注释保留(追加到末尾,避免丢注释)
+            let prefix = next.entries[entry].prefix.clone();
+            let removed = next.entries.remove(entry);
+            if !prefix.is_empty() {
+                if next.trailing.is_empty() {
+                    next.trailing = prefix;
+                } else {
+                    next.trailing = format!("{prefix}\n{}", next.trailing);
+                }
+            }
+            (
+                next,
+                true,
+                format!("{id} 已重置:移除用户补丁条目,回落到 {} 层默认", removed.id),
+            )
+        }
+        EntryLoc {
+            entry,
+            child: Some(_),
+        } => {
+            // insert 数组内子条目:从 insert 块中移除该行段
+            if let Some(nb) = remove_child_block(&next.entries[entry].block, id) {
+                next.entries[entry].block = nb;
+            }
+            (
+                next,
+                true,
+                format!("{id} 已重置:从 insert 数组中移除该插件行"),
+            )
         }
     }
-    (
-        next,
-        true,
-        format!("{id} 已重置:移除用户补丁条目,回落到 {} 层默认", removed.id),
-    )
 }
 
 // ── dump-config 解析(权威组合视图) ────────────────────────
@@ -1393,5 +1691,158 @@ mod tests {
         assert!(t4.contains("disabled: true"), "{t4}");
         assert!(!t4.contains("[]"), "有条目时不得残留 []: {t4}");
         assert!(d5.empty_array);
+    }
+}
+
+#[cfg(test)]
+mod insert_child_tests {
+    use super::*;
+
+    const INSERT_DOC: &str = r#"# header
+- id: web
+  config:
+    searchProvider: tavily
+- insert:
+    - id: web-search-tavily
+      name: '@dsh-plugins/web-search-tavily'
+      config:
+        apiKeyEnv: TAVILY_API_KEY
+
+    # Mount the external-roots provider
+    - id: skill-external-roots
+      name: '@dsh-plugins/skill-external-roots'
+      config:
+        enabled:
+          codex: true
+- id: agent-presets
+  config: {}
+"#;
+
+    fn doc() -> PatchDoc {
+        split_patch_doc(INSERT_DOC)
+    }
+
+    #[test]
+    fn locate_finds_insert_child() {
+        let d = doc();
+        let loc = locate_entry(&d, "skill-external-roots").expect("insert 子条目应可定位");
+        assert!(loc.child.is_some());
+        // 顶层条目仍按原路径定位
+        assert!(locate_entry(&d, "web").unwrap().child.is_none());
+        assert!(locate_entry(&d, "agent-presets").unwrap().child.is_none());
+        // entry_block 返回子条目行段(含缩进与 name)
+        let block = entry_block(&d, "skill-external-roots").unwrap();
+        assert!(
+            block.starts_with("    - id: skill-external-roots"),
+            "{block}"
+        );
+        assert!(
+            block.contains("@dsh-plugins/skill-external-roots"),
+            "{block}"
+        );
+        let cfg = extract_config(&block, false).unwrap();
+        assert_eq!(
+            cfg.get("enabled")
+                .and_then(|x| x.get("codex"))
+                .and_then(|x| x.as_bool()),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn save_config_form_rewrites_insert_child_in_place() {
+        let d = doc();
+        let cfg = serde_json::json!({
+            "enabled": { "codex": true, "claude": true, "cursor": true, "opencode": true },
+            "skillControlFile": "/Users/u/.dsh/skills-control.json",
+            "activeFile": "/Users/u/.dsh/state/skills-active.json",
+        });
+        let (d2, changed, _) = apply_save_config_form(&d, "skill-external-roots", &cfg, false);
+        assert!(changed);
+        // 仍在 insert 块内、name 保留、新键写入、旧键不残留
+        let out = reassemble(&d2);
+        assert!(out.contains("    - id: skill-external-roots"), "{out}");
+        assert!(
+            out.contains("name: '@dsh-plugins/skill-external-roots'"),
+            "{out}"
+        );
+        assert!(
+            out.contains("skillControlFile: /Users/u/.dsh/skills-control.json"),
+            "{out}"
+        );
+        assert!(
+            out.contains("activeFile: /Users/u/.dsh/state/skills-active.json"),
+            "{out}"
+        );
+        // 兄弟子条目与顶层条目原样保留
+        assert!(out.contains("- id: web-search-tavily"), "{out}");
+        assert!(out.contains("apiKeyEnv: TAVILY_API_KEY"), "{out}");
+        assert!(out.contains("- id: web\n"), "{out}");
+        assert!(out.contains("- id: agent-presets"), "{out}");
+        // 重新解析仍能读到新 config
+        let block = entry_block(&split_patch_doc(&out), "skill-external-roots").unwrap();
+        let v = extract_config(&block, false).unwrap();
+        assert_eq!(
+            v.get("skillControlFile").and_then(|x| x.as_str()),
+            Some("/Users/u/.dsh/skills-control.json")
+        );
+        // 未新增顶层重复条目(仍在 insert 数组内,顶层 entries 无该 id)
+        assert!(
+            !split_patch_doc(&out)
+                .entries
+                .iter()
+                .any(|e| e.id == "skill-external-roots"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn set_enabled_marks_insert_child() {
+        let d = doc();
+        let (d2, changed, _) = apply_set_enabled(&d, "skill-external-roots", false, false);
+        assert!(changed);
+        let out = reassemble(&d2);
+        assert!(out.contains("    - id: skill-external-roots"), "{out}");
+        assert!(out.contains("      disabled: true"), "{out}");
+        // 再次停用 = 无修改
+        let (_, changed2, _) =
+            apply_set_enabled(&split_patch_doc(&out), "skill-external-roots", false, false);
+        assert!(!changed2);
+        // 重新启用 → disabled 移除
+        let (d4, changed3, _) =
+            apply_set_enabled(&split_patch_doc(&out), "skill-external-roots", true, false);
+        assert!(changed3);
+        let out4 = reassemble(&d4);
+        assert!(!out4.contains("disabled: true"), "{out4}");
+    }
+
+    #[test]
+    fn reset_row_removes_insert_child() {
+        let d = doc();
+        let (d2, changed, _) = apply_reset_row(&d, "skill-external-roots");
+        assert!(changed);
+        let out = reassemble(&d2);
+        assert!(!out.contains("skill-external-roots"), "{out}");
+        // 兄弟子条目保留
+        assert!(out.contains("- id: web-search-tavily"), "{out}");
+        assert!(out.contains("- id: web\n"), "{out}");
+    }
+
+    #[test]
+    fn raw_save_rewrites_insert_child() {
+        let d = doc();
+        let raw = "    - id: skill-external-roots\n      name: '@dsh-plugins/skill-external-roots'\n      config:\n        enabled:\n          codex: false\n";
+        let (d2, changed, _) = apply_save_config_raw(&d, "skill-external-roots", raw).unwrap();
+        assert!(changed);
+        let out = reassemble(&d2);
+        assert!(out.contains("codex: false"), "{out}");
+        let block = entry_block(&split_patch_doc(&out), "skill-external-roots").unwrap();
+        let v = extract_config(&block, false).unwrap();
+        assert_eq!(
+            v.get("enabled")
+                .and_then(|x| x.get("codex"))
+                .and_then(|x| x.as_bool()),
+            Some(false)
+        );
     }
 }
