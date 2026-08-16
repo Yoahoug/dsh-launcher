@@ -49,6 +49,12 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: './src-tauri -> target'
+          # Share one cache across workflows via a stable key (job id omitted),
+          # so the ci.yml prebuild job and these tag builds hit the same cache.
+          shared-key: tauri-release
+          add-job-id-key: false
+          # Tag builds are terminal; restore-only so they never fill the quota.
+          save-if: false
 
       - name: pnpm install
         run: pnpm install --frozen-lockfile
@@ -88,6 +94,12 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: './src-tauri -> target'
+          # Share one cache across workflows via a stable key (job id omitted),
+          # so the ci.yml prebuild job and these tag builds hit the same cache.
+          shared-key: tauri-release
+          add-job-id-key: false
+          # Tag builds are terminal; restore-only so they never fill the quota.
+          save-if: false
 
       - name: pnpm install
         run: pnpm install --frozen-lockfile

@@ -54,3 +54,37 @@ jobs:
 
       - name: tauri build (debug, no bundle)
         run: pnpm tauri build --debug --no-bundle
+
+  # Warm the release-profile cargo cache on main so tag-triggered release
+  # builds (which only restore caches from the default branch) start from a
+  # pre-compiled state instead of a cold compile.
+  release-prebuild:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    paths:
+      - 'src-tauri/**'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/ci.yml'
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+          shared-key: tauri-release
+          add-job-id-key: false
+
+      - name: pnpm install
+        run: pnpm install --frozen-lockfile
+
+      - name: Prebuild release artifacts (no bundle)
+        run: pnpm tauri build --no-bundle
