@@ -8,7 +8,7 @@
 // - 写操作只允许落在 managed 根(默认 $DSH_HOME/skills,可在设置改 skillManagedRoot);
 //   `skills_delete` 对任何外部路径一律拒绝(路径围栏 + canonicalize 校验);
 // - 扫描不跟随符号链接出目录;预览正文限制大小(256 KB)。
-use crate::contract::{SkillRoot, SkillSource, SkillsSnapshot, SkillSummary};
+use crate::contract::{SkillRoot, SkillSource, SkillSummary, SkillsSnapshot};
 use crate::log_hub::LogHub;
 use crate::services::plugins;
 use std::path::{Path, PathBuf};
@@ -144,12 +144,7 @@ pub fn root_entries(ctx: &ScanCtx) -> Vec<SkillRoot> {
         let mut globs: Vec<(String, PathBuf)> = entries
             .flatten()
             .filter(|e| e.path().is_dir())
-            .map(|e| {
-                (
-                    e.file_name().to_string_lossy().to_string(),
-                    e.path(),
-                )
-            })
+            .map(|e| (e.file_name().to_string_lossy().to_string(), e.path()))
             .filter(|(name, _)| name.starts_with("skills-"))
             .collect();
         globs.sort();
@@ -180,13 +175,7 @@ pub fn root_entries(ctx: &ScanCtx) -> Vec<SkillRoot> {
     // 自定义根(设置追加)
     for r in &ctx.external_skill_roots {
         let p = PathBuf::from(r);
-        push_root(
-            &mut out,
-            "custom",
-            &format!("自定义 · {r}"),
-            p,
-            false,
-        );
+        push_root(&mut out, "custom", &format!("自定义 · {r}"), p, false);
     }
     out
 }
@@ -208,7 +197,11 @@ fn split_frontmatter(raw: &str) -> Option<(&str, &str)> {
         };
         let line = &raw[pos..line_end];
         if line.trim_end_matches('\r') == "---" {
-            let body_start = if line_end < raw.len() { line_end + 1 } else { line_end };
+            let body_start = if line_end < raw.len() {
+                line_end + 1
+            } else {
+                line_end
+            };
             return Some((&raw[first_nl + 1..pos], &raw[body_start..]));
         }
         if next_nl.is_none() {
@@ -263,7 +256,9 @@ fn parse_skill_file(path: &Path) -> Result<ParsedSkill, String> {
     // 废弃键拒绝(与 dsh 一致)
     for legacy in ["disableModelInvocation", "modelInvocable", "userInvocable"] {
         if obj.contains_key(legacy) {
-            return Err(format!("frontmatter 字段 {legacy} 已废弃,请用 disable-model-invocation / user-invocable"));
+            return Err(format!(
+                "frontmatter 字段 {legacy} 已废弃,请用 disable-model-invocation / user-invocable"
+            ));
         }
     }
     let name = obj
@@ -305,7 +300,9 @@ fn parse_skill_file(path: &Path) -> Result<ParsedSkill, String> {
 
 /// 技能目录是否在根内(canonicalize 围栏,防符号链接逃逸)。
 fn within_root(candidate: &Path, root: &Path) -> bool {
-    let c = candidate.canonicalize().unwrap_or_else(|_| candidate.to_path_buf());
+    let c = candidate
+        .canonicalize()
+        .unwrap_or_else(|_| candidate.to_path_buf());
     let r = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     c.starts_with(&r)
 }
@@ -383,7 +380,10 @@ fn scan_root(
             match parse_skill_file(&md) {
                 Ok(parsed) => {
                     if parsed.name != name {
-                        record_skip(format!("{name}:frontmatter 名称({})与目录名不一致", parsed.name));
+                        record_skip(format!(
+                            "{name}:frontmatter 名称({})与目录名不一致",
+                            parsed.name
+                        ));
                         continue;
                     }
                     let has_scripts = std::fs::read_dir(&skill_dir)
@@ -462,7 +462,8 @@ pub fn snapshot(ctx: &ScanCtx, log: &Arc<LogHub>, profile_name: &str) -> SkillsS
             if root.managed || !root.exists {
                 continue;
             }
-            let canon = std::fs::canonicalize(&root.path).unwrap_or_else(|_| PathBuf::from(&root.path));
+            let canon =
+                std::fs::canonicalize(&root.path).unwrap_or_else(|_| PathBuf::from(&root.path));
             root.enabled = dirs.iter().any(|d| {
                 let dc = std::fs::canonicalize(d).unwrap_or_else(|_| PathBuf::from(d));
                 dc == canon
@@ -487,7 +488,11 @@ fn find_managed(root: &Path, name: &str) -> Option<(PathBuf, PathBuf)> {
     }
 }
 
-fn frontmatter_text(name: &str, description: &str, when_to_use: Option<&str>) -> Result<String, String> {
+fn frontmatter_text(
+    name: &str,
+    description: &str,
+    when_to_use: Option<&str>,
+) -> Result<String, String> {
     let mut map = serde_json::Map::new();
     map.insert("name".into(), serde_json::json!(name));
     map.insert("description".into(), serde_json::json!(description));
@@ -510,7 +515,9 @@ pub fn create(
 ) -> Result<SkillSummary, String> {
     let name = name.trim();
     if !is_kebab(name) {
-        return Err(format!("技能名 {name} 必须为 kebab-case(小写字母/数字/中划线)"));
+        return Err(format!(
+            "技能名 {name} 必须为 kebab-case(小写字母/数字/中划线)"
+        ));
     }
     if description.trim().is_empty() {
         return Err("描述不能为空".into());
@@ -558,10 +565,7 @@ pub fn update(
     let (yaml, old_body) = split_frontmatter(&raw).ok_or("缺少 frontmatter,拒绝覆盖")?;
     let data: serde_json::Value =
         serde_yaml_ng::from_str(yaml).map_err(|e| format!("frontmatter 非法:{e}"))?;
-    let mut map = data
-        .as_object()
-        .cloned()
-        .ok_or("frontmatter 必须是映射")?;
+    let mut map = data.as_object().cloned().ok_or("frontmatter 必须是映射")?;
     map.insert("name".into(), serde_json::json!(name.trim()));
     map.insert("description".into(), serde_json::json!(description.trim()));
     match when_to_use {
@@ -583,9 +587,18 @@ pub fn update(
     std::fs::write(&md, content).map_err(|e| format!("写入失败:{e}"))?;
     let parsed = parse_skill_file(&md).map_err(|e| format!("更新后解析失败:{e}"))?;
     let has_scripts = std::fs::read_dir(&dir)
-        .map(|rd| rd.flatten().any(|e| e.file_name().to_string_lossy() != "SKILL.md"))
+        .map(|rd| {
+            rd.flatten()
+                .any(|e| e.file_name().to_string_lossy() != "SKILL.md")
+        })
         .unwrap_or(false);
-    Ok(make_summary(SkillSource::Managed, &dir, &md, &parsed, has_scripts))
+    Ok(make_summary(
+        SkillSource::Managed,
+        &dir,
+        &md,
+        &parsed,
+        has_scripts,
+    ))
 }
 
 /// 删除技能(路径围栏:仅 managed 根内;外部路径一律拒绝)。
@@ -625,12 +638,16 @@ pub fn import(
     let src = Path::new(source_path);
     let (src_dir, md_path, parsed) = if src.is_dir() {
         let md = src.join("SKILL.md");
-        let parsed = parse_skill_file(&md)
-            .map_err(|e| format!("源技能非法:{e}(路径:{})", md.display()))?;
+        let parsed =
+            parse_skill_file(&md).map_err(|e| format!("源技能非法:{e}(路径:{})", md.display()))?;
         (src.to_path_buf(), md, parsed)
     } else if src.is_file() && source_path.ends_with(".md") {
         let parsed = parse_skill_file(src).map_err(|e| format!("源技能非法:{e}"))?;
-        (src.parent().map(PathBuf::from).unwrap_or_default(), src.to_path_buf(), parsed)
+        (
+            src.parent().map(PathBuf::from).unwrap_or_default(),
+            src.to_path_buf(),
+            parsed,
+        )
     } else {
         return Err("导入源必须是技能目录(<name>/SKILL.md)或 <name>.md 文件".into());
     };
@@ -645,7 +662,9 @@ pub fn import(
     let target_dir = root.join(&target_name);
     let target_flat = root.join(format!("{target_name}.md"));
     if target_dir.exists() || target_flat.exists() {
-        return Err(format!("技能 {target_name} 已存在(managed 根),可先删除或换名导入"));
+        return Err(format!(
+            "技能 {target_name} 已存在(managed 根),可先删除或换名导入"
+        ));
     }
     std::fs::create_dir_all(&root).map_err(|e| format!("创建 managed 根失败:{e}"))?;
     if src.is_dir() {
@@ -658,9 +677,18 @@ pub fn import(
     let md = target_dir.join("SKILL.md");
     let parsed = parse_skill_file(&md).map_err(|e| format!("导入后解析失败:{e}"))?;
     let has_scripts = std::fs::read_dir(&target_dir)
-        .map(|rd| rd.flatten().any(|e| e.file_name().to_string_lossy() != "SKILL.md"))
+        .map(|rd| {
+            rd.flatten()
+                .any(|e| e.file_name().to_string_lossy() != "SKILL.md")
+        })
         .unwrap_or(false);
-    Ok(make_summary(SkillSource::Managed, &target_dir, &md, &parsed, has_scripts))
+    Ok(make_summary(
+        SkillSource::Managed,
+        &target_dir,
+        &md,
+        &parsed,
+        has_scripts,
+    ))
 }
 
 /// 递归拷贝(不跟随符号链接;失败即中断)。
@@ -774,7 +802,11 @@ mod tests {
 
         // 废弃键 → Err
         let f5 = base.join("legacy.md");
-        std::fs::write(&f5, "---\nname: legacy\ndescription: x\nmodelInvocable: false\n---\nbody").unwrap();
+        std::fs::write(
+            &f5,
+            "---\nname: legacy\ndescription: x\nmodelInvocable: false\n---\nbody",
+        )
+        .unwrap();
         assert!(parse_skill_file(&f5).is_err());
 
         let _ = std::fs::remove_dir_all(&base);
@@ -786,7 +818,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         // 非法目录名(非 kebab)的目录包 → 跳过
         std::fs::create_dir_all(base.join("codex/skills/good/SKILL.md").parent().unwrap()).unwrap();
-        std::fs::create_dir_all(base.join("codex/skills/Bad_Name/SKILL.md").parent().unwrap()).unwrap();
+        std::fs::create_dir_all(
+            base.join("codex/skills/Bad_Name/SKILL.md")
+                .parent()
+                .unwrap(),
+        )
+        .unwrap();
         std::fs::write(
             base.join("codex/skills/good/SKILL.md"),
             "---\nname: good\ndescription: ok\n---\nbody",
@@ -807,8 +844,16 @@ mod tests {
             "---\nname: zip\ndescription: z\n---\nbody",
         )
         .unwrap();
-        std::fs::write(base.join("dsh/skills/win-host.md"), "---\nname: win-host\ndescription: w\n---\nbody").unwrap();
-        std::fs::write(base.join("dsh/skills/.system/hidden.md"), "---\nname: hidden\ndescription: h\n---\nbody").unwrap();
+        std::fs::write(
+            base.join("dsh/skills/win-host.md"),
+            "---\nname: win-host\ndescription: w\n---\nbody",
+        )
+        .unwrap();
+        std::fs::write(
+            base.join("dsh/skills/.system/hidden.md"),
+            "---\nname: hidden\ndescription: h\n---\nbody",
+        )
+        .unwrap();
 
         let log = Arc::new(LogHub::new(
             std::env::temp_dir().join(format!("dsh-skills-scan-{}.log", std::process::id())),
@@ -829,20 +874,20 @@ mod tests {
         assert!(!names.contains(&"bad"), "目录名非 kebab 应跳过: {names:?}");
         assert!(!names.contains(&"no-fm"), "无 frontmatter 应跳过");
         assert!(!names.contains(&"hidden"), ".system 应跳过");
-        let bad = snap
-            .skills
-            .iter()
-            .find(|s| s.name == "good")
-            .unwrap();
+        let bad = snap.skills.iter().find(|s| s.name == "good").unwrap();
         assert_eq!(bad.source, SkillSource::Custom, "codex 根经 custom 追加");
-        let managed = snap
-            .skills
-            .iter()
-            .find(|s| s.name == "zip")
-            .unwrap();
+        let managed = snap.skills.iter().find(|s| s.name == "zip").unwrap();
         assert_eq!(managed.source, SkillSource::Managed);
-        assert!(snap.skipped.iter().any(|s| s.contains("Bad_Name")), "{:?}", snap.skipped);
-        assert!(snap.skipped.iter().any(|s| s.contains("no-fm")), "{:?}", snap.skipped);
+        assert!(
+            snap.skipped.iter().any(|s| s.contains("Bad_Name")),
+            "{:?}",
+            snap.skipped
+        );
+        assert!(
+            snap.skipped.iter().any(|s| s.contains("no-fm")),
+            "{:?}",
+            snap.skipped
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -866,7 +911,15 @@ mod tests {
         // 非法名拒绝
         assert!(create(&log, &ctx, "Bad_Name", "d", None, "b").is_err());
         // 创建
-        let s = create(&log, &ctx, "my-skill", "我的技能", Some("when needed"), "正文").unwrap();
+        let s = create(
+            &log,
+            &ctx,
+            "my-skill",
+            "我的技能",
+            Some("when needed"),
+            "正文",
+        )
+        .unwrap();
         assert_eq!(s.name, "my-skill");
         assert!(root.join("my-skill/SKILL.md").is_file());
         // 重复创建拒绝

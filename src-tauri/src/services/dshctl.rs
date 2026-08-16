@@ -125,9 +125,24 @@ pub fn run_capture(
         let _ = se.read_to_string(&mut err);
     }
     if !status.success() {
-        let tail: String = err.lines().rev().take(8).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
-        return Err(format!("{label} 退出码 {}{}", status.code().unwrap_or(-1),
-            if tail.is_empty() { String::new() } else { format!("\n{tail}") }));
+        let tail: String = err
+            .lines()
+            .rev()
+            .take(8)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(format!(
+            "{label} 退出码 {}{}",
+            status.code().unwrap_or(-1),
+            if tail.is_empty() {
+                String::new()
+            } else {
+                format!("\n{tail}")
+            }
+        ));
     }
     Ok(out)
 }
@@ -269,7 +284,11 @@ mod tests {
             git: None,
             dsh_node_dir: std::env::var("HOME").ok().map(std::path::PathBuf::from),
         };
-        let args = vec!["--profile".to_string(), "web".to_string(), "--dump-config".to_string()];
+        let args = vec![
+            "--profile".to_string(),
+            "web".to_string(),
+            "--dump-config".to_string(),
+        ];
         let (label, _cmd) = build_dsh_cmd(&tools, &base.display().to_string(), "", &args).unwrap();
         assert!(label.contains("dsh --profile web --dump-config"), "{label}");
         let _ = std::fs::remove_dir_all(&base);

@@ -162,12 +162,24 @@ pub fn split_patch_doc(text: &str) -> PatchDoc {
     for line in text.lines() {
         if line.trim() == "[]" {
             // 顶层显式空数组标记(仅无条目时输出)
-            flush_entry(&mut current, &mut entries, &mut pending, &mut header, &mut started);
+            flush_entry(
+                &mut current,
+                &mut entries,
+                &mut pending,
+                &mut header,
+                &mut started,
+            );
             empty_array = true;
             continue;
         }
         if line_is_top_entry(line) {
-            flush_entry(&mut current, &mut entries, &mut pending, &mut header, &mut started);
+            flush_entry(
+                &mut current,
+                &mut entries,
+                &mut pending,
+                &mut header,
+                &mut started,
+            );
             let id = if line.starts_with("- id:") {
                 line.trim_start_matches("- id:").trim().to_string()
             } else {
@@ -185,7 +197,13 @@ pub fn split_patch_doc(text: &str) -> PatchDoc {
                     body.push(line.to_string());
                 } else {
                     // 列首注释 / 异常列首行:结束当前条目
-                    flush_entry(&mut current, &mut entries, &mut pending, &mut header, &mut started);
+                    flush_entry(
+                        &mut current,
+                        &mut entries,
+                        &mut pending,
+                        &mut header,
+                        &mut started,
+                    );
                     pending.push(line.to_string());
                 }
             }
@@ -194,7 +212,13 @@ pub fn split_patch_doc(text: &str) -> PatchDoc {
             }
         }
     }
-    flush_entry(&mut current, &mut entries, &mut pending, &mut header, &mut started);
+    flush_entry(
+        &mut current,
+        &mut entries,
+        &mut pending,
+        &mut header,
+        &mut started,
+    );
     PatchDoc {
         header,
         entries,
@@ -498,22 +522,29 @@ fn extract_module(block: &str) -> String {
         .skip(1)
         .find_map(|l| {
             let t = l.trim_start();
-            t.strip_prefix("name:")
-                .map(|r| {
-                    let s = r.trim().to_string();
-                    let s = s.strip_prefix('\'').and_then(|x| x.strip_suffix('\'')).unwrap_or(&s);
-                    let s = s.strip_prefix('"').and_then(|x| x.strip_suffix('"')).unwrap_or(s);
-                    s.to_string()
-                })
+            t.strip_prefix("name:").map(|r| {
+                let s = r.trim().to_string();
+                let s = s
+                    .strip_prefix('\'')
+                    .and_then(|x| x.strip_suffix('\''))
+                    .unwrap_or(&s);
+                let s = s
+                    .strip_prefix('"')
+                    .and_then(|x| x.strip_suffix('"'))
+                    .unwrap_or(s);
+                s.to_string()
+            })
         })
         .unwrap_or_default()
 }
 
 /// 从行块提取 disabled(行级 `  disabled:` 字段)。
 pub(crate) fn extract_disabled(block: &str) -> bool {
-    block
-        .lines()
-        .any(|l| l.trim_start().strip_prefix("disabled:").is_some_and(|r| r.trim().parse::<bool>().ok() == Some(true)))
+    block.lines().any(|l| {
+        l.trim_start()
+            .strip_prefix("disabled:")
+            .is_some_and(|r| r.trim().parse::<bool>().ok() == Some(true))
+    })
 }
 
 /// 从行块提取 config(不含 !!js 时解析为 JSON;含 !!js 返回 None)。
@@ -730,8 +761,7 @@ fn write_patch_validated(
     // 备份
     let backup = if patch_path.exists() {
         let bak = format!("cordis.patch.yml.bak-{}", now_ts());
-        std::fs::copy(&patch_path, dir.join(&bak))
-            .map_err(|e| format!("备份补丁失败:{e}"))?;
+        std::fs::copy(&patch_path, dir.join(&bak)).map_err(|e| format!("备份补丁失败:{e}"))?;
         Some(bak)
     } else {
         None
@@ -1146,7 +1176,8 @@ mod tests {
 
     #[test]
     fn save_config_form_full_line_replace() {
-        let d = doc_from("- id: web\n  config:\n    searchProvider: deepseek-official\n    port: 1\n");
+        let d =
+            doc_from("- id: web\n  config:\n    searchProvider: deepseek-official\n    port: 1\n");
         let cfg = serde_json::json!({ "searchProvider": "tavily" });
         let (d2, changed, _) = apply_save_config_form(&d, "web", &cfg, false);
         assert!(changed);
@@ -1166,7 +1197,8 @@ mod tests {
     #[test]
     fn save_config_raw_roundtrip_with_js() {
         let d = doc_from("");
-        let raw = "- id: session-persistence-jsonl\n  config:\n    root: !!js dshHomePath('sessions')\n";
+        let raw =
+            "- id: session-persistence-jsonl\n  config:\n    root: !!js dshHomePath('sessions')\n";
         let (d2, changed, _) = apply_save_config_raw(&d, "session-persistence-jsonl", raw).unwrap();
         assert!(changed);
         assert!(d2.entries[0].block.contains("!!js"));
@@ -1196,11 +1228,17 @@ mod tests {
         assert_eq!(rows[0].id, "timer");
         assert_eq!(rows[1].id, "hmr");
         assert!(rows[1].layer_label.contains("patched by"));
-        assert_eq!(extract_module(&rows[1].block), "@deepseek-ai/cordis-plugin-hmr");
+        assert_eq!(
+            extract_module(&rows[1].block),
+            "@deepseek-ai/cordis-plugin-hmr"
+        );
         assert!(extract_disabled(&rows[1].block));
         let cfg = extract_config(&rows[1].block, false).unwrap();
         assert_eq!(cfg["root"][0], ".");
-        assert_eq!(extract_config(&rows[2].block, false).unwrap()["apiKeyEnv"], "TAVILY_API_KEY");
+        assert_eq!(
+            extract_config(&rows[2].block, false).unwrap()["apiKeyEnv"],
+            "TAVILY_API_KEY"
+        );
     }
 
     #[test]
@@ -1249,10 +1287,7 @@ mod tests {
         assert_eq!(found.as_deref(), Some("/Users/u/Desktop/dsh-plugins"));
         // 指向不同根 → None
         let p2 = ProfileSummary {
-            deps: BTreeMap::from([(
-                "@x/y".into(),
-                "file:/other/dsh-plugins/packages/y".into(),
-            )]),
+            deps: BTreeMap::from([("@x/y".into(), "file:/other/dsh-plugins/packages/y".into())]),
             ..p.clone()
         };
         assert_eq!(detect_plugins_path(&[p, p2]), None);
@@ -1274,7 +1309,12 @@ mod tests {
 
     #[test]
     fn final_text_uses_default_header_for_new_file() {
-        let d = PatchDoc { header: String::new(), entries: Vec::new(), trailing: String::new(), empty_array: false };
+        let d = PatchDoc {
+            header: String::new(),
+            entries: Vec::new(),
+            trailing: String::new(),
+            empty_array: false,
+        };
         let t = final_text(&d, false);
         assert!(t.starts_with("# Your patch layer"), "{t}");
         assert!(t.trim_end().ends_with(']'), "空补丁必须显式 []: {t}");

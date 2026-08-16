@@ -22,7 +22,10 @@ fn repo_path() -> Option<String> {
     }
     let home = std::env::var("HOME").ok()?;
     let p = format!("{home}/Desktop/deepseek-harness");
-    std::path::Path::new(&p).join("package.json").is_file().then_some(p)
+    std::path::Path::new(&p)
+        .join("package.json")
+        .is_file()
+        .then_some(p)
 }
 
 fn tools() -> Option<Tools> {
@@ -82,7 +85,11 @@ fn plugin_snapshot_and_patch_write_pipeline() {
     let snap = plugins::snapshot(&tools, &repo, &dsh_home, "m5test", "");
     assert!(snap.dump_error.is_none(), "{:?}", snap.dump_error);
     assert!(!snap.rows.is_empty(), "dump 应解析出 loader 行");
-    let timer = snap.rows.iter().find(|r| r.id == "timer").expect("timer 行存在");
+    let timer = snap
+        .rows
+        .iter()
+        .find(|r| r.id == "timer")
+        .expect("timer 行存在");
     assert_eq!(timer.layer, dsh_launcher_lib::contract::PluginLayer::Bundle);
     assert!(timer.enabled);
     // 含 !!js 的行(如 session-persistence-jsonl)标记 raw-yaml
@@ -104,7 +111,8 @@ fn plugin_snapshot_and_patch_write_pipeline() {
     let r = plugins::set_enabled(&log, &ctx, "m5test", "timer", false).unwrap();
     assert!(r.validated, "{:?}", r.error);
     assert!(r.backup.is_some(), "写入前必须有备份");
-    let patch_text = std::fs::read_to_string(base.join("dshhome/profiles/m5test/cordis.patch.yml")).unwrap();
+    let patch_text =
+        std::fs::read_to_string(base.join("dshhome/profiles/m5test/cordis.patch.yml")).unwrap();
     assert!(patch_text.contains("disabled: true"), "{patch_text}");
     // 备份文件存在
     let bak = base.join("dshhome/profiles/m5test").join(r.backup.unwrap());
@@ -113,29 +121,41 @@ fn plugin_snapshot_and_patch_write_pipeline() {
     // 再启用:disabled 行被移除(整行语义)
     let r2 = plugins::set_enabled(&log, &ctx, "m5test", "timer", true).unwrap();
     assert!(r2.validated);
-    let patch_text2 = std::fs::read_to_string(base.join("dshhome/profiles/m5test/cordis.patch.yml")).unwrap();
+    let patch_text2 =
+        std::fs::read_to_string(base.join("dshhome/profiles/m5test/cordis.patch.yml")).unwrap();
     assert!(!patch_text2.contains("disabled: true"), "{patch_text2}");
 
     // ── M2:保存配置(整行替换,非深合并) ──
     let cfg = serde_json::json!({ "port": 9999 });
     let r3 = plugins::save_config(&log, &ctx, "m5test", "timer", &cfg, None).unwrap();
     assert!(r3.validated);
-    let patch_text3 = std::fs::read_to_string(base.join("dshhome/profiles/m5test/cordis.patch.yml")).unwrap();
+    let patch_text3 =
+        std::fs::read_to_string(base.join("dshhome/profiles/m5test/cordis.patch.yml")).unwrap();
     assert!(patch_text3.contains("port: 9999"), "{patch_text3}");
 
     // ── M2:非法补丁 → dump-config 校验失败 → 自动回滚 ──
-    let before = std::fs::read_to_string(base.join("dshhome/profiles/m5test/cordis.patch.yml")).unwrap();
+    let before =
+        std::fs::read_to_string(base.join("dshhome/profiles/m5test/cordis.patch.yml")).unwrap();
     let bad = "- id: timer\n  config: [unclosed\n";
-    let err = plugins::save_config(&log, &ctx, "m5test", "timer", &serde_json::json!({}), Some(bad))
-        .expect_err("非法 YAML 必须被 dump-config 拦下并回滚");
+    let err = plugins::save_config(
+        &log,
+        &ctx,
+        "m5test",
+        "timer",
+        &serde_json::json!({}),
+        Some(bad),
+    )
+    .expect_err("非法 YAML 必须被 dump-config 拦下并回滚");
     assert!(err.contains("已自动回滚"), "{err}");
-    let after = std::fs::read_to_string(base.join("dshhome/profiles/m5test/cordis.patch.yml")).unwrap();
+    let after =
+        std::fs::read_to_string(base.join("dshhome/profiles/m5test/cordis.patch.yml")).unwrap();
     assert_eq!(before, after, "校验失败后必须恢复备份内容");
 
     // ── M2:重置(移除用户条目) ──
     let r4 = plugins::reset_row(&log, &ctx, "m5test", "timer").unwrap();
     assert!(r4.validated);
-    let patch_text4 = std::fs::read_to_string(base.join("dshhome/profiles/m5test/cordis.patch.yml")).unwrap();
+    let patch_text4 =
+        std::fs::read_to_string(base.join("dshhome/profiles/m5test/cordis.patch.yml")).unwrap();
     assert!(!patch_text4.contains("port: 9999"), "{patch_text4}");
 
     // 仅校验(不写文件)
@@ -169,7 +189,15 @@ fn skills_managed_crud_and_fence() {
     assert_eq!(s.name, "m5-integration");
     let snap = skills::snapshot(&ctx, &log, "m5test");
     assert!(snap.skills.iter().any(|x| x.name == "m5-integration"));
-    let u = skills::update(&log, &ctx, "m5-integration", "新描述", Some("when"), "新正文").unwrap();
+    let u = skills::update(
+        &log,
+        &ctx,
+        "m5-integration",
+        "新描述",
+        Some("when"),
+        "新正文",
+    )
+    .unwrap();
     assert_eq!(u.description, "新描述");
     skills::delete(&log, &ctx, "m5-integration").unwrap();
     let snap2 = skills::snapshot(&ctx, &log, "m5test");

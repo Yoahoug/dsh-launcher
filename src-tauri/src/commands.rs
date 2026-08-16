@@ -463,13 +463,19 @@ fn finish_plugin_op(
     result: Result<(), crate::ops::OperationError>,
 ) {
     match result {
-        Ok(()) => state.ops.finish(id, crate::contract::OperationStatus::Success, None),
-        Err(crate::ops::OperationError::Cancelled) => state
+        Ok(()) => state
             .ops
-            .finish(id, crate::contract::OperationStatus::Cancelled, Some("已取消".into())),
-        Err(crate::ops::OperationError::Failed(e)) => state
-            .ops
-            .finish(id, crate::contract::OperationStatus::Failed, Some(e)),
+            .finish(id, crate::contract::OperationStatus::Success, None),
+        Err(crate::ops::OperationError::Cancelled) => state.ops.finish(
+            id,
+            crate::contract::OperationStatus::Cancelled,
+            Some("已取消".into()),
+        ),
+        Err(crate::ops::OperationError::Failed(e)) => {
+            state
+                .ops
+                .finish(id, crate::contract::OperationStatus::Failed, Some(e))
+        }
     }
     state.set_snapshot(app, |_| {});
 }
@@ -549,7 +555,9 @@ fn install_package_flow(
     .map_err(crate::ops::OperationError::Failed)?;
     token.check()?;
     if code != 0 {
-        return Err(crate::ops::OperationError::Failed("插件包依赖安装失败(pnpm install 退出码非 0)".into()));
+        return Err(crate::ops::OperationError::Failed(
+            "插件包依赖安装失败(pnpm install 退出码非 0)".into(),
+        ));
     }
     // 2. pnpm run build(包声明了 build 脚本才执行;产物 lib/)
     let has_build = std::fs::read_to_string(&pj)
@@ -580,7 +588,9 @@ fn install_package_flow(
         .map_err(crate::ops::OperationError::Failed)?;
         token.check()?;
         if code2 != 0 {
-            return Err(crate::ops::OperationError::Failed("插件包构建失败(pnpm run build 退出码非 0)".into()));
+            return Err(crate::ops::OperationError::Failed(
+                "插件包构建失败(pnpm run build 退出码非 0)".into(),
+            ));
         }
     }
     // 3. dsh plugin --profile <p> add file:<abs>
@@ -757,12 +767,7 @@ pub fn skills_import(
     state: State<'_, Arc<AppState>>,
 ) -> Result<crate::contract::SkillSummary, String> {
     let (ctx, _profile) = skill_ctx();
-    let r = crate::services::skills::import(
-        &state.log_hub,
-        &ctx,
-        &source_path,
-        name.as_deref(),
-    );
+    let r = crate::services::skills::import(&state.log_hub, &ctx, &source_path, name.as_deref());
     if r.is_ok() {
         emit_skills_changed(&app);
     }
@@ -785,12 +790,7 @@ pub async fn skills_enable_root(
 ) -> Result<crate::contract::PatchWriteResult, String> {
     let (ctx, default_profile) = plugin_write_ctx(&state);
     let profile = nonempty_profile(&profile, &default_profile);
-    let r = crate::services::plugins::enable_skill_root(
-        &state.log_hub,
-        &ctx,
-        &profile,
-        &root_path,
-    );
+    let r = crate::services::plugins::enable_skill_root(&state.log_hub, &ctx, &profile, &root_path);
     if r.is_ok() {
         emit_skills_changed(&app);
     }
