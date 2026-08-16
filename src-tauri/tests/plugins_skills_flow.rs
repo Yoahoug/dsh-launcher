@@ -31,7 +31,7 @@ fn repo_path() -> Option<String> {
 fn tools() -> Option<Tools> {
     let node = runtime::resolve_dsh_node()?;
     Some(Tools {
-        pnpm: runtime::resolve_executable("pnpm").or_else(|| crate_resolve_pnpm()),
+        pnpm: runtime::resolve_executable("pnpm").or_else(crate_resolve_pnpm),
         git: runtime::resolve_executable("git"),
         dsh_node_dir: node.0.parent().map(std::path::PathBuf::from),
     })

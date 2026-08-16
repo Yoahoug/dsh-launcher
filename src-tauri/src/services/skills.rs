@@ -204,9 +204,7 @@ fn split_frontmatter(raw: &str) -> Option<(&str, &str)> {
             };
             return Some((&raw[first_nl + 1..pos], &raw[body_start..]));
         }
-        if next_nl.is_none() {
-            return None;
-        }
+        next_nl?;
         pos = line_end + 1;
     }
 }
@@ -723,7 +721,7 @@ pub fn preview(source_path: &str) -> Result<String, String> {
     }
     let meta = std::fs::metadata(&f).map_err(|e| format!("读取失败:{e}"))?;
     if meta.len() > MAX_PREVIEW_BYTES {
-        return Err(format!("技能正文超过预览上限(256 KB)"));
+        return Err("技能正文超过预览上限(256 KB)".to_string());
     }
     std::fs::read_to_string(&f).map_err(|e| format!("读取失败:{e}"))
 }

@@ -137,10 +137,10 @@ fn flush_entry(
 ) {
     if let Some((id, body, has_js)) = current.take() {
         if !*started {
-            *header = pending.drain(..).collect::<Vec<_>>().join("\n");
+            *header = std::mem::take(pending).join("\n");
             *started = true;
         }
-        let prefix = pending.drain(..).collect::<Vec<_>>().join("\n");
+        let prefix = std::mem::take(pending).join("\n");
         entries.push(PatchEntry {
             id,
             prefix,
@@ -407,7 +407,6 @@ pub fn apply_save_config_raw(
     }
     let got_id = trimmed
         .trim_start_matches("- id:")
-        .trim()
         .split_whitespace()
         .next()
         .unwrap_or("")
@@ -1283,7 +1282,7 @@ mod tests {
             ]),
             patch_ok: true,
         };
-        let found = detect_plugins_path(&[p.clone()]);
+        let found = detect_plugins_path(std::slice::from_ref(&p));
         assert_eq!(found.as_deref(), Some("/Users/u/Desktop/dsh-plugins"));
         // 指向不同根 → None
         let p2 = ProfileSummary {

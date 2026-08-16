@@ -491,14 +491,11 @@ pub fn plugins_install_package(
     let state = state.inner().clone();
     let settings = crate::config::load();
     let tools = state.tools.lock().unwrap().clone();
-    let (id, token) = state
-        .ops
-        .begin(
-            crate::contract::OperationKind::PluginInstall,
-            true,
-            "准备安装插件…",
-        )
-        .map_err(|e| e)?;
+    let (id, token) = state.ops.begin(
+        crate::contract::OperationKind::PluginInstall,
+        true,
+        "准备安装插件…",
+    )?;
     state.set_snapshot(&app, |_| {});
     let app2 = app.clone();
     let state2 = state.clone();
@@ -627,14 +624,11 @@ pub fn plugins_remove_package(
     let state = state.inner().clone();
     let settings = crate::config::load();
     let tools = state.tools.lock().unwrap().clone();
-    let (id, token) = state
-        .ops
-        .begin(
-            crate::contract::OperationKind::PluginRemove,
-            true,
-            "移除插件…",
-        )
-        .map_err(|e| e)?;
+    let (id, token) = state.ops.begin(
+        crate::contract::OperationKind::PluginRemove,
+        true,
+        "移除插件…",
+    )?;
     state.set_snapshot(&app, |_| {});
     let app2 = app.clone();
     let state2 = state.clone();
