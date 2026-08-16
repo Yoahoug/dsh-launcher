@@ -550,7 +550,6 @@ export const mockApi: DesktopApi = {
       { key: 'managed', label: '已管理 · $DSH_HOME/skills', path: '~/.dsh/skills', exists: true, managed: true, enabled: false },
       { key: 'codex', label: 'Codex', path: '~/.codex/skills', exists: true, managed: false, enabled: true },
       { key: 'claude', label: 'Claude Code', path: '~/.claude/skills', exists: true, managed: false, enabled: false },
-      { key: 'cursor', label: 'Cursor', path: '~/.cursor/skills-cursor', exists: true, managed: false, enabled: false },
     ],
     skills: mockSkills,
     pluginsInstalled: true,
@@ -611,7 +610,7 @@ export const mockApi: DesktopApi = {
   skillsGetControl: async (): Promise<SkillsControlState> => ({
     file: '/Users/u/.dsh/skills-control.json',
     version: 1,
-    roots: { codex: true, claude: true, cursor: true, opencode: true },
+    roots: { codex: true, claude: true, cursor: false, opencode: true },
     skills: { ...mockControlSkills },
   }),
   skillsSetInjected: async (name, enabled): Promise<SkillToggleResult> => {
@@ -620,6 +619,14 @@ export const mockApi: DesktopApi = {
     return {
       ok: true,
       summary: `${name} 已${enabled ? '开启' : '关闭'}注入(mock)· 运行中 dsh 约 1-2 秒内热更新`,
+      enabled,
+    }
+  },
+  skillsSetRootInjected: async (rootKey, enabled): Promise<SkillToggleResult> => {
+    window.dispatchEvent(new CustomEvent('mock:skills'))
+    return {
+      ok: true,
+      summary: `${rootKey} 根目录下技能已${enabled ? '开启' : '关闭'}注入(mock)· 运行中 dsh 约 1-2 秒内热更新`,
       enabled,
     }
   },

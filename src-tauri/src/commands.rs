@@ -964,6 +964,22 @@ pub fn skills_set_injected(
     r
 }
 
+/// 按外部工具族根目录批量开关(Cursor/Codex/Claude/OpenCode)。
+#[tauri::command]
+pub fn skills_set_root_injected(
+    app: AppHandle,
+    root_key: String,
+    enabled: bool,
+    state: State<'_, Arc<AppState>>,
+) -> Result<crate::contract::SkillToggleResult, String> {
+    let (ctx, _profile) = skill_ctx();
+    let r = crate::services::skills::set_root_injected(&state.log_hub, &ctx, &root_key, enabled);
+    if r.is_ok() {
+        emit_skills_changed(&app);
+    }
+    r
+}
+
 /// 一键启用注入控制:把 skillControlFile/activeFile 写进 skill-external-roots 行
 /// (整行重述 + dump-config 校验 + HMR),之后插件才读写控制/active 文件。
 #[tauri::command]

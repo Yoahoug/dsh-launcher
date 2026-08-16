@@ -130,6 +130,8 @@ export interface DesktopApi {
   skillsGetControl(): Promise<SkillsControlState>
   /** 技能注入开关:关闭 = 运行中 dsh 不再注入该技能。 */
   skillsSetInjected(name: string, enabled: boolean): Promise<SkillToggleResult>
+  /** 按外部工具族根目录批量开关(Cursor/Codex/Claude/OpenCode)。 */
+  skillsSetRootInjected(rootKey: string, enabled: boolean): Promise<SkillToggleResult>
   /** 一键启用注入控制:把 skillControlFile/activeFile 写进 skill-external-roots 行。 */
   skillsEnableControl(profile: string): Promise<PatchWriteResult>
   onSkillsChanged(cb: () => void): Promise<UnlistenFn>
@@ -206,6 +208,7 @@ export const desktopApi: DesktopApi = {
   skillsGetActive: () => invoke('skills_get_active'),
   skillsGetControl: () => invoke('skills_get_control'),
   skillsSetInjected: (name, enabled) => invoke('skills_set_injected', { name, enabled }),
+  skillsSetRootInjected: (rootKey, enabled) => invoke('skills_set_root_injected', { rootKey, enabled }),
   skillsEnableControl: (profile) => invoke('skills_enable_control', { profile }),
   onSkillsChanged: (cb) => listen(EVENTS.SKILLS_CHANGED, () => cb()),
 }

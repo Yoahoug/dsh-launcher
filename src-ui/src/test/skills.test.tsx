@@ -5,7 +5,7 @@ import userEvent from '@testing-library/user-event'
 import { SkillsPage } from '@/components/skills/skills-page'
 import { ToastProvider } from '@/components/ui/toast'
 import { mockApi } from '@/lib/mock'
-import type { SkillsSnapshot } from '@/types/schema'
+import type { SkillsActiveSnapshot, SkillsSnapshot } from '@/types/schema'
 
 const snap: SkillsSnapshot = {
   roots: [
@@ -38,17 +38,22 @@ const snap: SkillsSnapshot = {
   skipped: ['bad:目录名非 kebab-case,跳过'],
 }
 
-function renderPage() {
+function renderPage(options: {
+  snapshot?: SkillsSnapshot
+  active?: SkillsActiveSnapshot
+  runtime?: { state: 'idle' | 'syncing' | 'installing' | 'building' | 'starting' | 'running' | 'stopping' | 'failed'; mode: 'none' | 'normal' | 'dev'; hmrActive: boolean }
+} = {}) {
   vi.spyOn(mockApi, 'getSettings').mockResolvedValue({
     repoPath: '/Users/u/deepseek-harness', port: 3080, host: '127.0.0.1', dshHome: '',
     autostart: false, openBrowser: true, autoUpdateCheck: true, buildArgs: '',
     readyTimeoutMs: 180_000, startTimeoutMs: 180_000, firstRunSkipped: true,
     profileName: 'web', dshPluginsPath: '/x', externalSkillRoots: [], skillManagedRoot: '',
   })
-  vi.spyOn(mockApi, 'skillsGetSnapshot').mockResolvedValue(snap)
+  vi.spyOn(mockApi, 'skillsGetSnapshot').mockResolvedValue(options.snapshot ?? snap)
+  if (options.active) vi.spyOn(mockApi, 'skillsGetActive').mockResolvedValue(options.active)
   return render(
     <ToastProvider>
-      <SkillsPage />
+      <SkillsPage runtime={options.runtime} />
     </ToastProvider>,
   )
 }
@@ -142,6 +147,22 @@ describe('技能管理子界面', () => {
     await user.click(enableBtn)
     expect(spy).toHaveBeenCalledWith('web', '/Users/u/.codex/skills')
   })
+
+  it('同名技能继续按名称控制,但标注重复根目录来源', async () => {
+    const user = userEvent.setup()
+    const duplicate: SkillsSnapshot['skills'][number] = {
+      ...snap.skills[2]!,
+      source: 'codex',
+      dir: '/Users/u/.codex/skills/tavily-extract',
+      path: '/Users/u/.codex/skills/tavily-extract/SKILL.md',
+    }
+    renderPage({ snapshot: { ...snap, skills: [...snap.skills, duplicate] } })
+    await goDiscover(user)
+    expect(await screen.findAllByText('同名 ×2')).toHaveLength(2)
+    expect(screen.getAllByText(/发现根目录:.*\.codex\/skills/).length).toBeGreaterThanOrEqual(1)
+    expect(screen.getAllByText(/发现根目录:.*\.claude\/skills/).length).toBeGreaterThanOrEqual(1)
+    expect(screen.getAllByText(/同名来源:/).length).toBeGreaterThanOrEqual(2)
+  })
 })
 
 describe('技能注入控制(已启动/外部发现两子界面)', () => {
@@ -203,5 +224,41 @@ describe('技能注入控制(已启动/外部发现两子界面)', () => {
     const btn = screen.getByRole('button', { name: /启用注入控制/ })
     await user.click(btn)
     expect(spy).toHaveBeenCalledWith('web')
+  })
+
+  it('已启动技能支持预览,并按实际根目录分组后一键关闭', async () => {
+    const user = userEvent.setup()
+    const active: SkillsActiveSnapshot = {
+      file: '/Users/u/.dsh/state/skills-active.json',
+      writtenAt: null,
+      skills: [{
+        name: 'tavily-extract', description: 'Extract', whenToUse: null, source: 'external',
+        root: '/Users/u/.claude/skills', path: '/Users/u/.claude/skills/tavily-extract/SKILL.md',
+        modelInvocable: true, userInvocable: true,
+      }],
+      error: null,
+      controlFile: '/Users/u/.dsh/skills-control.json',
+      controlFileExists: true,
+    }
+    const snapshot = {
+      ...snap,
+      roots: snap.roots.map((root) => root.key === 'claude' ? { ...root, path: '/Users/u/.claude/skills' } : root),
+    }
+    const rootSpy = vi.spyOn(mockApi, 'skillsSetRootInjected').mockResolvedValue({
+      ok: true, summary: 'claude 根目录下技能已关闭注入(mock)', enabled: false,
+    })
+    renderPage({ snapshot, active })
+    expect(await screen.findByText('Claude Code')).toBeInTheDocument()
+    expect(screen.getByText('根目录:/Users/u/.claude/skills')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '关闭Claude Code全部' }))
+    expect(rootSpy).toHaveBeenCalledWith('claude', false)
+    await user.click(screen.getByRole('button', { name: '预览' }))
+    expect(await screen.findAllByText('/Users/u/.claude/skills/tavily-extract/SKILL.md')).not.toHaveLength(0)
+  })
+
+  it('普通模式明确提示技能开关不会热重载', async () => {
+    renderPage({ runtime: { state: 'running', mode: 'normal', hmrActive: false } })
+    expect(await screen.findByText(/当前普通模式:技能开关不会热重载/)).toBeInTheDocument()
+    expect(screen.getByText(/普通模式。技能开关已写入控制文件/)).toBeInTheDocument()
   })
 })

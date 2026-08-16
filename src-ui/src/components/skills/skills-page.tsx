@@ -22,6 +22,7 @@ import { api } from '@/hooks/use-app'
 import { cn } from '@/lib/utils'
 import type {
   ActiveSkill,
+  AppSnapshot,
   SkillRoot,
   SkillSource,
   SkillSummary,
@@ -266,10 +267,12 @@ function ImportDialog({
 
 /** 预览对话框。 */
 function PreviewDialog({
-  skill,
+  name,
+  path,
   onClose,
 }: {
-  skill: SkillSummary
+  name: string
+  path: string
   onClose: () => void
 }) {
   const [content, setContent] = React.useState<string | null>(null)
@@ -277,16 +280,16 @@ function PreviewDialog({
   React.useEffect(() => {
     let mounted = true
     void api
-      .skillsPreview(skill.path)
+      .skillsPreview(path)
       .then((c) => mounted && setContent(c))
       .catch((e) => mounted && setError(String(e)))
     return () => {
       mounted = false
     }
-  }, [skill.path])
+  }, [path])
   return (
-    <Modal title={`预览 · ${skill.name}`} icon={<Eye className="size-4 text-blue-500" />} onClose={onClose} width="max-w-[720px]">
-      <p className="mb-2 break-all font-mono text-[11px] text-muted-foreground">{skill.path}</p>
+    <Modal title={`预览 · ${name}`} icon={<Eye className="size-4 text-blue-500" />} onClose={onClose} width="max-w-[720px]">
+      <p className="mb-2 break-all font-mono text-[11px] text-muted-foreground">{path}</p>
       {error && <p className="text-xs text-red-500">{error}</p>}
       {content === null && !error && <p className="text-xs text-muted-foreground">加载中…</p>}
       {content !== null && (
@@ -302,6 +305,25 @@ function PreviewDialog({
 }
 
 const SOURCE_ORDER: SkillSource[] = ['managed', 'codex', 'claude', 'cursor', 'opencode', 'agents', 'custom', 'project']
+const ROOT_CONTROL_KEYS = new Set(['codex', 'claude', 'cursor', 'opencode'])
+
+type PreviewTarget = { name: string; path: string }
+type RuntimeSnapshot = Pick<AppSnapshot, 'state' | 'mode' | 'hmrActive'>
+
+function normalizePath(path: string) {
+  return path.replaceAll('\\', '/').replace(/\/+$/, '')
+}
+
+/** 返回扫描到某技能时命中的根目录(同名技能仍按名称控制,这里只做来源说明)。 */
+function discoveredRoot(skill: SkillSummary, roots: SkillRoot[]) {
+  const skillDir = normalizePath(skill.dir)
+  return roots
+    .filter((root) => {
+      const rootPath = normalizePath(root.path)
+      return skillDir === rootPath || skillDir.startsWith(`${rootPath}/`)
+    })
+    .sort((a, b) => normalizePath(b.path).length - normalizePath(a.path).length)[0]?.path ?? null
+}
 
 /** 单张技能卡片。 */
 function SkillCard({
@@ -313,6 +335,8 @@ function SkillCard({
   onDelete,
   onImport,
   onPreview,
+  discoveredRootPath,
+  duplicateRoots,
 }: {
   skill: SkillSummary
   /** 是否已注入运行中 dsh(与已启动清单去重标记)。 */
@@ -324,6 +348,8 @@ function SkillCard({
   onDelete?: () => void
   onImport?: () => void
   onPreview: () => void
+  discoveredRootPath?: string | null
+  duplicateRoots?: string[]
 }) {
   return (
     <div className="rounded-xl border border-border bg-card p-3.5 transition-all duration-300 hover:border-border-hover">
@@ -344,6 +370,9 @@ function SkillCard({
                 {injected ? '已注入 ✓' : '未注入'}
               </Badge>
             )}
+            {duplicateRoots && duplicateRoots.length > 1 && (
+              <Badge variant="warning">同名 ×{duplicateRoots.length}</Badge>
+            )}
           </div>
           <p className="mt-1 line-clamp-2 text-xs text-muted-foreground" title={skill.description}>
             {skill.description}
@@ -351,9 +380,19 @@ function SkillCard({
           {skill.whenToUse && (
             <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">何时使用:{skill.whenToUse}</p>
           )}
-          <p className="mt-1 truncate font-mono text-[10px] text-muted-foreground/70" title={skill.dir}>
-            {skill.dir}
+          {discoveredRootPath && (
+            <p className="mt-1 truncate font-mono text-[10px] text-muted-foreground/70" title={discoveredRootPath}>
+              发现根目录:{discoveredRootPath}
+            </p>
+          )}
+          <p className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground/50" title={skill.dir}>
+            技能路径:{skill.dir}
           </p>
+          {duplicateRoots && duplicateRoots.length > 1 && (
+            <p className="mt-0.5 line-clamp-2 text-[10px] text-amber-600 dark:text-amber-400" title={duplicateRoots.join('\n')}>
+              同名来源:{duplicateRoots.join('、')}
+            </p>
+          )}
         </div>
         {onToggleInject && (
           <InjectionSwitch
@@ -423,11 +462,13 @@ function ActiveSkillCard({
   checked,
   onToggle,
   toggling,
+  onPreview,
 }: {
   skill: ActiveSkill
   checked: boolean
   onToggle: (on: boolean) => void
   toggling: boolean
+  onPreview: () => void
 }) {
   return (
     <div className="rounded-xl border border-border bg-card p-3.5 transition-all duration-300 hover:border-border-hover">
@@ -460,6 +501,9 @@ function ActiveSkillCard({
           disabled={toggling}
         />
       </div>
+      <div className="mt-2.5 flex items-center gap-1.5">
+        <Button variant="ghost" size="sm" onClick={onPreview}><Eye /> 预览</Button>
+      </div>
     </div>
   )
 }
@@ -490,7 +534,13 @@ function BuiltinSkillCard({ skill }: { skill: SkillSummary }) {
 }
 
 /** 技能管理子界面:独立管理增删改 + 自动扫描本机外部技能。 */
-export function SkillsPage({ onOpenPlugins }: { onOpenPlugins?: () => void }) {
+export function SkillsPage({
+  onOpenPlugins,
+  runtime,
+}: {
+  onOpenPlugins?: () => void
+  runtime?: RuntimeSnapshot | null
+}) {
   const { toast } = useToast()
   const [tab, setTab] = React.useState<'active' | 'discover'>('active')
   const [snap, setSnap] = React.useState<SkillsSnapshot | null>(null)
@@ -501,7 +551,7 @@ export function SkillsPage({ onOpenPlugins }: { onOpenPlugins?: () => void }) {
   const [showCreate, setShowCreate] = React.useState(false)
   const [editing, setEditing] = React.useState<SkillSummary | null>(null)
   const [showImport, setShowImport] = React.useState(false)
-  const [previewing, setPreviewing] = React.useState<SkillSummary | null>(null)
+  const [previewing, setPreviewing] = React.useState<PreviewTarget | null>(null)
   const [enabling, setEnabling] = React.useState<string | null>(null)
   const [toggling, setToggling] = React.useState<string | null>(null)
   const [profileName, setProfileName] = React.useState('web')
@@ -546,7 +596,7 @@ export function SkillsPage({ onOpenPlugins }: { onOpenPlugins?: () => void }) {
     )
   }, [snap, query])
 
-  /** 去重:已启动清单的技能名集合(外部发现侧据此标记「已注入 ✓ / 未注入」)。 */
+  /** 已启动清单按技能名判断注入状态;同名来源只做展示标注,不拆成多个控制项。 */
   const injectedSet = React.useMemo(
     () => new Set((activeSnap?.skills ?? []).map((s) => s.name)),
     [activeSnap],
@@ -577,6 +627,29 @@ export function SkillsPage({ onOpenPlugins }: { onOpenPlugins?: () => void }) {
     }
     return map
   }, [snap])
+
+  const duplicateRootsByName = React.useMemo(() => {
+    const map = new Map<string, Set<string>>()
+    for (const skill of snap?.skills ?? []) {
+      if (skill.source === 'managed' || skill.source === 'project') continue
+      const root = discoveredRoot(skill, snap?.roots ?? []) ?? skill.dir
+      const roots = map.get(skill.name) ?? new Set<string>()
+      roots.add(root)
+      map.set(skill.name, roots)
+    }
+    return new Map([...map].map(([name, roots]) => [name, [...roots]]))
+  }, [snap])
+
+  const normalRunning = runtime?.state === 'running' && runtime.mode === 'normal'
+  const devHotReload = runtime?.state === 'running' && runtime.mode === 'dev' && runtime.hmrActive
+
+  const reloadHint = normalRunning
+    ? '当前普通模式不支持热重载,请重启 dsh 后生效'
+    : devHotReload
+      ? '开发模式 HMR 将在约 1-2 秒内更新'
+      : runtime?.state === 'running'
+        ? '当前运行模式未确认热重载,如未生效请重启 dsh'
+        : 'dsh 未运行,下次启动时生效'
 
   const del = async (skill: SkillSummary) => {
     if (!window.confirm(`确定删除技能「${skill.name}」?(${skill.dir})`)) return
@@ -612,7 +685,7 @@ export function SkillsPage({ onOpenPlugins }: { onOpenPlugins?: () => void }) {
       const r = await api.skillsSetInjected(name, on)
       if (r.ok) {
         setControl((c) => (c ? { ...c, skills: { ...c.skills, [name]: on } } : c))
-        toast({ kind: 'success', title: on ? '已开启注入' : '已关闭注入', detail: r.summary })
+        toast({ kind: 'success', title: on ? '已开启注入' : '已关闭注入', detail: `${r.summary};${reloadHint}` })
         // 插件 1.5s 轮询 + 重新收集 → active 清单约 3s 后更新
         window.setTimeout(() => void load(), 3200)
       } else {
@@ -620,6 +693,30 @@ export function SkillsPage({ onOpenPlugins }: { onOpenPlugins?: () => void }) {
       }
     } catch (e) {
       toast({ kind: 'error', title: '开关失败', detail: String(e) })
+    } finally {
+      setToggling(null)
+    }
+  }
+
+  /** 按外部工具族根目录关闭全部已启动技能(Cursor 等受支持的根)。 */
+  const toggleRoot = async (rootKey: string, skills: ActiveSkill[]) => {
+    const toggleId = `root:${rootKey}`
+    setToggling(toggleId)
+    try {
+      const r = ROOT_CONTROL_KEYS.has(rootKey)
+        ? await api.skillsSetRootInjected(rootKey, false)
+        : (await Promise.all(skills.map((skill) => api.skillsSetInjected(skill.name, false)))).every((result) => result.ok)
+          ? { ok: true, summary: `${rootKey} 根目录下技能已关闭注入`, enabled: false }
+          : { ok: false, summary: `${rootKey} 根目录关闭失败`, enabled: false }
+      if (r.ok) {
+        setControl((c) => (c ? { ...c, roots: { ...c.roots, [rootKey]: false } } : c))
+        toast({ kind: 'success', title: '已关闭根目录注入', detail: `${r.summary};${reloadHint}` })
+        window.setTimeout(() => void load(), 3200)
+      } else {
+        toast({ kind: 'error', title: '关闭根目录失败', detail: r.summary })
+      }
+    } catch (e) {
+      toast({ kind: 'error', title: '关闭根目录失败', detail: String(e) })
     } finally {
       setToggling(null)
     }
@@ -699,6 +796,8 @@ export function SkillsPage({ onOpenPlugins }: { onOpenPlugins?: () => void }) {
                   : undefined
               }
               onPreview={() => setPreviewing(skill)}
+              discoveredRootPath={source !== 'managed' && source !== 'project' ? discoveredRoot(skill, snap?.roots ?? []) : null}
+              duplicateRoots={source !== 'managed' && source !== 'project' ? duplicateRootsByName.get(skill.name) : undefined}
               onEdit={source === 'managed' ? () => setEditing(skill) : undefined}
               onDelete={source === 'managed' ? () => void del(skill) : undefined}
               onImport={source !== 'managed' && source !== 'project' ? () => void importSkill(skill) : undefined}
@@ -785,12 +884,18 @@ export function SkillsPage({ onOpenPlugins }: { onOpenPlugins?: () => void }) {
               )}
             </>
           )}
+          {normalRunning && (
+            <Badge variant="warning">当前普通模式:技能开关不会热重载,需要重启 dsh</Badge>
+          )}
+          {devHotReload && (
+            <Badge variant="success">当前开发模式 · HMR:技能开关可热重载</Badge>
+          )}
           {tab === 'active' ? (
             <>
               <Badge variant={controlEnabled ? 'success' : 'warning'}>
                 {controlEnabled ? '注入控制已启用' : '注入控制未启用'}
               </Badge>
-              <span>关闭某技能的开关后,运行中的 dsh 约 1-2 秒内不再注入(无需重启)</span>
+              <span>{normalRunning ? '普通模式不会热重载,请重启 dsh 后生效' : reloadHint}</span>
             </>
           ) : (
             <>
@@ -813,11 +918,15 @@ export function SkillsPage({ onOpenPlugins }: { onOpenPlugins?: () => void }) {
             <ActiveSkillsView
               activeSnap={activeSnap}
               builtinSkills={builtinSkills}
+              roots={snap?.roots ?? []}
               control={control}
               controlEnabled={controlEnabled}
               pluginsInstalled={snap?.pluginsInstalled ?? false}
+              runtime={runtime}
               toggling={toggling}
               onToggle={toggleSkill}
+              onToggleRoot={toggleRoot}
+              onPreview={(skill) => setPreviewing({ name: skill.name, path: skill.path })}
               onEnableControl={enableControl}
               onRefresh={() => void load()}
               loading={loading}
@@ -853,7 +962,7 @@ export function SkillsPage({ onOpenPlugins }: { onOpenPlugins?: () => void }) {
       {showImport && (
         <ImportDialog onClose={() => setShowImport(false)} onDone={() => void load()} />
       )}
-      {previewing && <PreviewDialog skill={previewing} onClose={() => setPreviewing(null)} />}
+      {previewing && <PreviewDialog name={previewing.name} path={previewing.path} onClose={() => setPreviewing(null)} />}
     </div>
   )
 }
@@ -862,22 +971,30 @@ export function SkillsPage({ onOpenPlugins }: { onOpenPlugins?: () => void }) {
 function ActiveSkillsView({
   activeSnap,
   builtinSkills,
+  roots,
   control,
   controlEnabled,
   pluginsInstalled,
+  runtime,
   toggling,
   onToggle,
+  onToggleRoot,
+  onPreview,
   onEnableControl,
   onRefresh,
   loading,
 }: {
   activeSnap: SkillsActiveSnapshot | null
   builtinSkills: SkillSummary[]
+  roots: SkillRoot[]
   control: SkillsControlState | null
   controlEnabled: boolean
   pluginsInstalled: boolean
+  runtime?: RuntimeSnapshot | null
   toggling: string | null
   onToggle: (name: string, on: boolean) => void
+  onToggleRoot: (rootKey: string, skills: ActiveSkill[]) => void
+  onPreview: (skill: ActiveSkill) => void
   onEnableControl: () => void
   onRefresh: () => void
   loading: boolean
@@ -887,6 +1004,14 @@ function ActiveSkillsView({
   }
   const skills = activeSnap.skills
   const externalSkills = skills
+  const externalGroups = new Map<string, ActiveSkill[]>()
+  for (const skill of externalSkills) {
+    const group = externalGroups.get(skill.root) ?? []
+    group.push(skill)
+    externalGroups.set(skill.root, group)
+  }
+  const normalRunning = runtime?.state === 'running' && runtime.mode === 'normal'
+  const devHotReload = runtime?.state === 'running' && runtime.mode === 'dev' && runtime.hmrActive
   const writtenAt = activeSnap.writtenAt
     ? new Date(activeSnap.writtenAt).toLocaleString()
     : null
@@ -919,6 +1044,17 @@ function ActiveSkillsView({
               <RefreshCw className={loading ? 'animate-spin' : 'size-3'} /> 刷新
             </Button>
           </span>
+        </div>
+      )}
+
+      {normalRunning && (
+        <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-xs text-amber-700 dark:text-amber-300">
+          当前 dsh 为普通模式。技能开关已写入控制文件，但运行中的服务不支持热重载；请重启 dsh 后生效。
+        </div>
+      )}
+      {devHotReload && (
+        <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 px-4 py-3 text-xs text-emerald-700 dark:text-emerald-300">
+          当前 dsh 为开发模式 · HMR，技能开关会在约 1-2 秒内热重载。
         </div>
       )}
 
@@ -968,16 +1104,47 @@ function ActiveSkillsView({
       )}
 
       {externalSkills.length > 0 && (
-        <div className="grid grid-cols-1 gap-2 xl:grid-cols-2">
-          {externalSkills.map((skill) => (
-            <ActiveSkillCard
-              key={skill.name}
-              skill={skill}
-              checked={control?.skills[skill.name] ?? true}
-              onToggle={(on) => onToggle(skill.name, on)}
-              toggling={toggling === skill.name}
-            />
-          ))}
+        <div className="flex flex-col gap-4">
+          {[...externalGroups].map(([rootPath, groupSkills]) => {
+            const root = roots.find((item) => normalizePath(item.path) === normalizePath(rootPath))
+            const rootKey = root?.key
+            const familyLabel = rootKey === 'cursor' ? 'Cursor' : root?.label ?? '此根目录'
+            return (
+              <section key={rootPath} className="space-y-2">
+                <div className="flex flex-wrap items-center gap-2 px-1">
+                  <h4 className="text-sm font-semibold">{familyLabel}</h4>
+                  <Badge variant="neutral">{groupSkills.length}</Badge>
+                  <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-muted-foreground" title={rootPath}>
+                    根目录:{rootPath}
+                  </span>
+                  {rootKey && ROOT_CONTROL_KEYS.has(rootKey) && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 px-2 text-[11px]"
+                      aria-label={`关闭${familyLabel}全部`}
+                      onClick={() => onToggleRoot(rootKey, groupSkills)}
+                      disabled={toggling === `root:${rootKey}`}
+                    >
+                      关闭{familyLabel}全部
+                    </Button>
+                  )}
+                </div>
+                <div className="grid grid-cols-1 gap-2 xl:grid-cols-2">
+                  {groupSkills.map((skill) => (
+                    <ActiveSkillCard
+                      key={`${skill.name}:${skill.root}:${skill.path}`}
+                      skill={skill}
+                      checked={control?.skills[skill.name] ?? (rootKey ? control?.roots[rootKey] ?? true : true)}
+                      onToggle={(on) => onToggle(skill.name, on)}
+                      toggling={toggling === skill.name || toggling === `root:${rootKey}`}
+                      onPreview={() => onPreview(skill)}
+                    />
+                  ))}
+                </div>
+              </section>
+            )
+          })}
         </div>
       )}
       </section>

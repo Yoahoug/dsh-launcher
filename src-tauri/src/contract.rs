@@ -594,7 +594,7 @@ pub enum SkillSource {
     Codex,
     /// ~/.claude/skills。
     Claude,
-    /// ~/.cursor/skills、~/.cursor/skills-*(只探测存在的精确目录)。
+    /// Cursor 系统技能不纳入 launcher 扫描;其余外部工具根按实现扫描。
     Cursor,
     /// ~/.config/opencode/skills。
     Opencode,

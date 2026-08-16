@@ -1368,6 +1368,14 @@ pub fn enable_skill_control(
         serde_json::Value::Object(m) => m,
         _ => serde_json::Map::new(),
     };
+    // Cursor 的系统技能不纳入启动器技能管理，也不允许插件继续探测注入。
+    // 保留其它已有配置，只覆盖这一族的显式开关。
+    let mut enabled = cfg
+        .remove("enabled")
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+    enabled.insert("cursor".into(), serde_json::Value::Bool(false));
+    cfg.insert("enabled".into(), serde_json::Value::Object(enabled));
     cfg.insert("skillControlFile".into(), serde_json::json!(control_file));
     cfg.insert("activeFile".into(), serde_json::json!(active_file));
     let (doc, changed, summary) = apply_save_config_form(

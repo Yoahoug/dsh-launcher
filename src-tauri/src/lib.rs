@@ -118,6 +118,7 @@ pub fn run() {
             commands::skills_get_active,
             commands::skills_get_control,
             commands::skills_set_injected,
+            commands::skills_set_root_injected,
             commands::skills_enable_control,
         ])
         .setup(move |app| {

@@ -69,6 +69,10 @@ fn push_root(out: &mut Vec<SkillRoot>, key: &str, label: &str, path: PathBuf, ma
     });
 }
 
+fn is_cursor_system_root(path: &str) -> bool {
+    expand_home(path).starts_with(expand_home("~/.cursor"))
+}
+
 /// 读取 profile patch + home patch 中 skill-filesystem 行的 customSkillDirs(一键启用状态)。
 fn custom_skill_dirs(dsh_home: &Path, profile: &str) -> Vec<String> {
     let mut dirs: Vec<String> = Vec::new();
@@ -98,7 +102,7 @@ fn custom_skill_dirs(dsh_home: &Path, profile: &str) -> Vec<String> {
     dirs
 }
 
-/// 默认根映射 + 设置追加(§5.4)。cursor 的 skills-* 只探测存在的精确目录。
+/// 默认根映射 + 设置追加(§5.4)。Cursor 系统技能不纳入 launcher 扫描。
 pub fn root_entries(ctx: &ScanCtx) -> Vec<SkillRoot> {
     let mut out = Vec::new();
     push_root(
@@ -136,29 +140,6 @@ pub fn root_entries(ctx: &ScanCtx) -> Vec<SkillRoot> {
         expand_home("~/.agents/skills"),
         false,
     );
-    // Cursor:标准路径 + skills-* 通配(仅存在的精确目录)
-    let cursor_base = expand_home("~/.cursor");
-    let cursor_std = cursor_base.join("skills");
-    push_root(&mut out, "cursor", "Cursor", cursor_std, false);
-    if let Ok(entries) = std::fs::read_dir(&cursor_base) {
-        let mut globs: Vec<(String, PathBuf)> = entries
-            .flatten()
-            .filter(|e| e.path().is_dir())
-            .map(|e| (e.file_name().to_string_lossy().to_string(), e.path()))
-            .filter(|(name, _)| name.starts_with("skills-"))
-            .collect();
-        globs.sort();
-        for (name, path) in globs {
-            out.push(SkillRoot {
-                key: "cursor".into(),
-                label: format!("Cursor · {name}"),
-                path: path.to_string_lossy().to_string(),
-                exists: true,
-                managed: false,
-                enabled: false,
-            });
-        }
-    }
     // 项目根(只读展示)
     for (rel, label) in [
         (".dsh/skills", "项目 · .dsh/skills"),
@@ -174,6 +155,9 @@ pub fn root_entries(ctx: &ScanCtx) -> Vec<SkillRoot> {
     }
     // 自定义根(设置追加)
     for r in &ctx.external_skill_roots {
+        if is_cursor_system_root(r) {
+            continue;
+        }
         let p = PathBuf::from(r);
         push_root(&mut out, "custom", &format!("自定义 · {r}"), p, false);
     }
@@ -770,6 +754,9 @@ pub fn active_snapshot(ctx: &ScanCtx, profile: &str) -> crate::contract::SkillsA
                     .map(|a| {
                         a.iter()
                             .filter_map(|e| serde_json::from_value(e.clone()).ok())
+                            .filter(|skill: &crate::contract::ActiveSkill| {
+                                !is_cursor_system_root(&skill.root)
+                            })
                             .collect()
                     })
                     .unwrap_or_default();
@@ -823,25 +810,14 @@ fn bool_map(v: Option<&serde_json::Value>) -> std::collections::BTreeMap<String,
         .unwrap_or_default()
 }
 
-/// 技能注入开关:更新控制文件 skills[name] = enabled(原子写)。
-pub fn set_injected(
-    _log: &Arc<LogHub>,
-    ctx: &ScanCtx,
-    name: &str,
-    enabled: bool,
-) -> Result<crate::contract::SkillToggleResult, String> {
-    let name = name.trim();
-    if !is_kebab(name) {
-        return Err(format!("技能名 {name} 必须为 kebab-case"));
-    }
-    let home = plugins::dsh_home_dir(&ctx.dsh_home_setting);
-    let file = control_file(&home);
-    let current = control_state(ctx);
-    let mut skills = current.skills;
-    skills.insert(name.to_string(), enabled);
+fn write_control_file(
+    file: &Path,
+    roots: &std::collections::BTreeMap<String, bool>,
+    skills: &std::collections::BTreeMap<String, bool>,
+) -> Result<(), String> {
     let payload = serde_json::json!({
         "version": 1,
-        "roots": serde_json::Value::Object(current.roots.iter().map(|(k, v)| (k.clone(), serde_json::json!(v))).collect()),
+        "roots": serde_json::Value::Object(roots.iter().map(|(k, v)| (k.clone(), serde_json::json!(v))).collect()),
         "skills": serde_json::Value::Object(skills.iter().map(|(k, v)| (k.clone(), serde_json::json!(v))).collect()),
     });
     if let Some(dir) = file.parent() {
@@ -858,11 +834,58 @@ pub fn set_injected(
         )
         .map_err(|e| format!("写入控制文件失败:{e}"))?;
     }
-    std::fs::rename(&tmp, &file).map_err(|e| format!("控制文件落盘失败:{e}"))?;
+    std::fs::rename(&tmp, file).map_err(|e| format!("控制文件落盘失败:{e}"))
+}
+
+/// 技能注入开关:更新控制文件 skills[name] = enabled(原子写)。
+pub fn set_injected(
+    _log: &Arc<LogHub>,
+    ctx: &ScanCtx,
+    name: &str,
+    enabled: bool,
+) -> Result<crate::contract::SkillToggleResult, String> {
+    let name = name.trim();
+    if !is_kebab(name) {
+        return Err(format!("技能名 {name} 必须为 kebab-case"));
+    }
+    let home = plugins::dsh_home_dir(&ctx.dsh_home_setting);
+    let file = control_file(&home);
+    let current = control_state(ctx);
+    let mut skills = current.skills;
+    skills.insert(name.to_string(), enabled);
+    write_control_file(&file, &current.roots, &skills)?;
     Ok(crate::contract::SkillToggleResult {
         ok: true,
         summary: format!(
             "{name} 已{}注入(控制文件 {})· 运行中 dsh 约 1-2 秒内热更新",
+            if enabled { "开启" } else { "关闭" },
+            file.display()
+        ),
+        enabled,
+    })
+}
+
+/// 按外部工具族根目录批量开关(Cursor/Codex/Claude/OpenCode)。
+/// roots.cursor=false 会同时关闭 Cursor 的 skills 与 skills-* 根。
+pub fn set_root_injected(
+    _log: &Arc<LogHub>,
+    ctx: &ScanCtx,
+    root_key: &str,
+    enabled: bool,
+) -> Result<crate::contract::SkillToggleResult, String> {
+    if !matches!(root_key, "codex" | "claude" | "cursor" | "opencode") {
+        return Err(format!("不支持按根目录开关:{root_key}"));
+    }
+    let home = plugins::dsh_home_dir(&ctx.dsh_home_setting);
+    let file = control_file(&home);
+    let current = control_state(ctx);
+    let mut roots = current.roots;
+    roots.insert(root_key.to_string(), enabled);
+    write_control_file(&file, &roots, &current.skills)?;
+    Ok(crate::contract::SkillToggleResult {
+        ok: true,
+        summary: format!(
+            "{root_key} 根目录下技能已{}注入(控制文件 {})· 运行中 dsh 约 1-2 秒内热更新",
             if enabled { "开启" } else { "关闭" },
             file.display()
         ),
@@ -882,6 +905,25 @@ pub fn injected_map(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn root_entries_exclude_cursor_system_skills() {
+        let ctx = ScanCtx {
+            repo_path: "/tmp/dsh-launcher-test-repo".into(),
+            dsh_home_setting: "/tmp/dsh-launcher-test-home".into(),
+            skill_managed_root_setting: "/tmp/dsh-launcher-test-home/skills".into(),
+            external_skill_roots: vec![
+                "~/.cursor/skills-cursor".into(),
+                "/tmp/custom-skills".into(),
+            ],
+        };
+        let roots = root_entries(&ctx);
+        assert!(roots.iter().all(|root| root.key != "cursor"));
+        assert!(roots.iter().all(|root| !root.path.contains(".cursor")));
+        assert!(roots.iter().any(|root| root.path == "/tmp/custom-skills"));
+        assert!(is_cursor_system_root("~/.cursor/skills-cursor"));
+        assert!(!is_cursor_system_root("~/.codex/skills"));
+    }
 
     #[test]
     fn kebab_validation_matches_dsh() {

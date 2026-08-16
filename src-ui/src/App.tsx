@@ -247,7 +247,7 @@ function AppInner() {
                   )}
                   {page === 'logs' && <LogsPage initialLevel={logsLevel} onBack={goDashboard} />}
                   {page === 'plugins' && <PluginsPage />}
-                  {page === 'skills' && <SkillsPage onOpenPlugins={() => setPage('plugins')} />}
+                  {page === 'skills' && <SkillsPage runtime={snap} onOpenPlugins={() => setPage('plugins')} />}
                   {page === 'settings' && <SettingsPage onBack={goDashboard} />}
                   {page === 'first-run' && (
                     <FirstRunPage
