@@ -72,7 +72,7 @@ pub fn app_data_dir() -> PathBuf {
     }
     #[cfg(target_os = "macos")]
     {
-        return Path::new(&home_dir()).join("Library/Application Support/dsh-launcher");
+        Path::new(&home_dir()).join("Library/Application Support/dsh-launcher")
     }
     #[cfg(not(any(windows, target_os = "macos")))]
     {

@@ -244,6 +244,7 @@ impl Supervisor {
     }
 
     /// 启动安装包内随附的 DSH Web Host。
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn_packaged_web(
         &self,
         node_binary: &Path,
