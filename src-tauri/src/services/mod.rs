@@ -1,3 +1,4 @@
+pub mod archives;
 pub mod build;
 pub mod dshctl;
 pub mod plugins;

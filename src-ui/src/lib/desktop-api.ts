@@ -6,6 +6,9 @@ import type { UnlistenFn } from '@tauri-apps/api/event'
 import {
   EVENTS,
   type ActionAccepted,
+  type ArchiveDeleteResult,
+  type ArchiveRestoreResult,
+  type ArchivesSnapshot,
   type ChatStateSnapshot,
   type ActionName,
   type AppSnapshot,
@@ -49,6 +52,10 @@ export interface DesktopApi {
   /** 环境检测(带文件缓存;force=true 强制重新探测)。 */
   inspectEnvironment(force?: boolean): Promise<EnvironmentSnapshot>
   getDesktopSnapshot(): Promise<DesktopSnapshot>
+  archivesGetSnapshot(): Promise<ArchivesSnapshot>
+  archivesRestore(sessionId: string): Promise<ArchiveRestoreResult>
+  archivesDelete(sessionId: string): Promise<ArchiveDeleteResult>
+  archivesDeleteAll(): Promise<ArchiveDeleteResult>
   savePreferences(preferences: DesktopPreferences): Promise<DesktopPreferences>
   /** 完成/跳过首次运行引导(skip=true 跳过;提供 repoPath 时一并保存)。 */
   completeFirstRun(skip: boolean, repoPath?: string): Promise<DesktopSnapshot>
@@ -148,6 +155,10 @@ export const desktopApi: DesktopApi = {
   saveSettings: (patch) => invoke('save_settings', { patch }),
   inspectEnvironment: (force) => invoke('inspect_environment', { force }),
   getDesktopSnapshot: () => invoke('get_desktop_snapshot'),
+  archivesGetSnapshot: () => invoke('archives_get_snapshot'),
+  archivesRestore: (sessionId) => invoke('archives_restore', { sessionId }),
+  archivesDelete: (sessionId) => invoke('archives_delete', { sessionId }),
+  archivesDeleteAll: () => invoke('archives_delete_all'),
   savePreferences: (preferences) => invoke('save_preferences', { preferences }),
   completeFirstRun: (skip, repoPath) => invoke('complete_first_run', { skip, repoPath }),
   setTopbarHidden: (hidden) => invoke('set_topbar_hidden', { hidden }),

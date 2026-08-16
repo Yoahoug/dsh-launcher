@@ -263,6 +263,45 @@ export interface DesktopSnapshot {
   version: string
 }
 
+/** 归档会话条目。 */
+export interface ArchiveSession {
+  sessionId: string
+  title: string
+  createdAt: number | null
+  lastActivityAt: number | null
+}
+
+/** 归档工作区分组;workspaceId=null 表示无项目。 */
+export interface ArchiveGroup {
+  workspaceId: string | null
+  title: string
+  path: string | null
+  sessions: ArchiveSession[]
+}
+
+/** 归档页全量快照。 */
+export interface ArchivesSnapshot {
+  groups: ArchiveGroup[]
+  total: number
+  running: boolean
+  pluginAvailable: boolean
+  restoreAvailable: boolean
+  deleteAvailable: boolean
+  status: string | null
+}
+
+/** 单次恢复结果。 */
+export interface ArchiveRestoreResult {
+  sessionId: string
+  hot: boolean
+}
+
+/** 永久删除结果。 */
+export interface ArchiveDeleteResult {
+  deletedCount: number
+  hot: boolean
+}
+
 /** 工具链来源:系统安装 / Launcher 托管 / 项目本地·Corepack。 */
 export type ToolSource = 'system' | 'managed' | 'corepack'
 
@@ -353,6 +392,7 @@ export type PageName =
   | 'plugins'
   | 'skills'
   | 'settings'
+  | 'archives'
   | 'first-run'
 
 // ── M5:插件管理子界面 ─────────────────────────────────────

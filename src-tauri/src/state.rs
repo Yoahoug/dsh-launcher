@@ -306,6 +306,38 @@ impl AppState {
         }
     }
 
+    // ── 归档会话 ───────────────────────────────────────────
+
+    pub fn archives_get_snapshot(&self) -> Result<crate::contract::ArchivesSnapshot, String> {
+        let settings = config::load();
+        let running = self.snapshot().state == crate::contract::LauncherState::Running;
+        crate::services::archives::get_snapshot(&settings, running)
+    }
+
+    pub fn archives_restore(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::contract::ArchiveRestoreResult, String> {
+        let settings = config::load();
+        let running = self.snapshot().state == crate::contract::LauncherState::Running;
+        crate::services::archives::restore(&settings, running, session_id)
+    }
+
+    pub fn archives_delete(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::contract::ArchiveDeleteResult, String> {
+        let settings = config::load();
+        let running = self.snapshot().state == crate::contract::LauncherState::Running;
+        crate::services::archives::delete(&settings, running, session_id)
+    }
+
+    pub fn archives_delete_all(&self) -> Result<crate::contract::ArchiveDeleteResult, String> {
+        let settings = config::load();
+        let running = self.snapshot().state == crate::contract::LauncherState::Running;
+        crate::services::archives::delete_all(&settings, running)
+    }
+
     /// 完成/跳过首次运行引导:
     /// - skip=true 仅标记 firstRunSkipped(不强制要求仓库可用,用户稍后配置);
     /// - repo_path 提供时一并保存(完成引导路径);

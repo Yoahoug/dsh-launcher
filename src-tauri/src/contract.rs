@@ -294,6 +294,55 @@ pub struct DesktopSnapshot {
     pub version: String,
 }
 
+/// 归档会话条目(用于 Codex 风格归档页)。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveSession {
+    pub session_id: String,
+    pub title: String,
+    pub created_at: Option<i64>,
+    pub last_activity_at: Option<i64>,
+}
+
+/// 一个工作区归档分组;workspace_id=None 表示无项目。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveGroup {
+    pub workspace_id: Option<String>,
+    pub title: String,
+    pub path: Option<String>,
+    pub sessions: Vec<ArchiveSession>,
+}
+
+/// 归档页全量快照。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchivesSnapshot {
+    pub groups: Vec<ArchiveGroup>,
+    pub total: usize,
+    pub running: bool,
+    pub plugin_available: bool,
+    pub restore_available: bool,
+    pub delete_available: bool,
+    pub status: Option<String>,
+}
+
+/// 单次恢复结果。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveRestoreResult {
+    pub session_id: String,
+    pub hot: bool,
+}
+
+/// 单次或批量永久删除结果。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveDeleteResult {
+    pub deleted_count: usize,
+    pub hot: bool,
+}
+
 impl Default for DesktopPreferences {
     fn default() -> Self {
         Self {

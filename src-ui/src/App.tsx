@@ -1,6 +1,7 @@
 import * as React from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Dashboard } from '@/components/dashboard/dashboard'
+import { ArchivesPage } from '@/components/archives/archives-page'
 import { OperationBanner } from '@/components/dashboard/operation-banner'
 import { TopBar } from '@/components/dashboard/topbar'
 import { DshWorkspace } from '@/components/dsh-workspace/dsh-workspace'
@@ -62,6 +63,7 @@ function AppInner() {
       urlPage === 'plugins' ||
       urlPage === 'skills' ||
       urlPage === 'settings' ||
+      urlPage === 'archives' ||
       urlPage === 'first-run'
       ? urlPage
       : 'dashboard',
@@ -248,15 +250,16 @@ function AppInner() {
                   {page === 'logs' && <LogsPage initialLevel={logsLevel} onBack={goDashboard} />}
                   {page === 'plugins' && <PluginsPage />}
                   {page === 'skills' && <SkillsPage runtime={snap} onOpenPlugins={() => setPage('plugins')} />}
-                  {page === 'settings' && <SettingsPage onBack={goDashboard} />}
-                  {page === 'first-run' && (
-                    <FirstRunPage
-                      onDone={() => {
-                        setFirstRunDismissed(true)
-                        goDashboard()
-                      }}
-                    />
-                  )}
+                      {page === 'settings' && <SettingsPage onBack={goDashboard} />}
+                      {page === 'archives' && <ArchivesPage />}
+                      {page === 'first-run' && (
+                        <FirstRunPage
+                          onDone={() => {
+                            setFirstRunDismissed(true)
+                            goDashboard()
+                          }}
+                        />
+                      )}
                 </motion.div>
               </AnimatePresence>
             </main>

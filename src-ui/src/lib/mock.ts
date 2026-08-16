@@ -5,7 +5,10 @@ import type {
   ActionAccepted,
   ActionName,
   ActiveSkill,
+  ArchiveDeleteResult,
+  ArchiveRestoreResult,
   AppSnapshot,
+  ArchivesSnapshot,
   DesktopPreferences,
   DesktopSnapshot,
   DshViewSnapshot,
@@ -321,6 +324,36 @@ export const mockApi: DesktopApi = {
     const preferences = themeOverride ? { ...prefs, theme: themeOverride as DesktopPreferences['theme'] } : { ...prefs }
     return { preferences, firstRunDone: mockFirstRunDone || !firstRun, version: VERSION }
   },
+  archivesGetSnapshot: async (): Promise<ArchivesSnapshot> => ({
+    groups: [
+      {
+        workspaceId: 'mock-workspace',
+        title: 'dsh-launcher',
+        path: '/Users/you/Desktop/dsh-launcher',
+        sessions: [
+          { sessionId: 'session-1', title: '更新插件技能管理模块', createdAt: Date.now() - 86_400_000, lastActivityAt: Date.now() - 3_600_000 },
+          { sessionId: 'session-2', title: '完成 DeepSeek 工作区集成', createdAt: Date.now() - 172_800_000, lastActivityAt: Date.now() - 172_800_000 },
+        ],
+      },
+      {
+        workspaceId: null,
+        title: '无项目',
+        path: null,
+        sessions: [
+          { sessionId: 'session-3', title: '确认 web.run 搜索工具', createdAt: Date.now() - 259_200_000, lastActivityAt: Date.now() - 259_200_000 },
+        ],
+      },
+    ],
+    total: 3,
+    running: current.state === 'running',
+    pluginAvailable: true,
+    restoreAvailable: true,
+    deleteAvailable: true,
+    status: null,
+  }),
+  archivesRestore: async (sessionId): Promise<ArchiveRestoreResult> => ({ sessionId, hot: current.state === 'running' }),
+  archivesDelete: async (_sessionId): Promise<ArchiveDeleteResult> => ({ deletedCount: 1, hot: current.state === 'running' }),
+  archivesDeleteAll: async (): Promise<ArchiveDeleteResult> => ({ deletedCount: 3, hot: current.state === 'running' }),
   completeFirstRun: async (_skip, _repoPath): Promise<DesktopSnapshot> => {
     mockFirstRunDone = true
     // 广播 state-changed 让 useDesktopSnapshot 立即刷新,退出向导(与 Rust 行为一致)

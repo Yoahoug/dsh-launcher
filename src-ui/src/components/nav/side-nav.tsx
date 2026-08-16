@@ -1,4 +1,4 @@
-import { Cpu, GitBranch, Puzzle, ScrollText, Server, Settings, Sparkles } from 'lucide-react'
+import { Archive, Cpu, GitBranch, Puzzle, ScrollText, Server, Settings, Sparkles } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { PageName } from '@/types/schema'
 
@@ -10,6 +10,7 @@ const NAV_ITEMS: { key: PageName; label: string; icon: typeof Server }[] = [
   { key: 'skills', label: '技能', icon: Sparkles },
   { key: 'logs', label: '运行日志', icon: ScrollText },
   { key: 'settings', label: '设置', icon: Settings },
+  { key: 'archives', label: '已归档会话', icon: Archive },
 ]
 
 /** 左侧导航菜单(复刻 cc-switch 选中态:实心蓝底白字)。 */

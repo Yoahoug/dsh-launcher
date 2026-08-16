@@ -1,7 +1,8 @@
 // dsh-launcher · Tauri commands(M1 为 mock 实现,M2 替换为 bridge 数据源,M3 增加桌面偏好)
 use crate::contract::{
-    ActionAccepted, AppSnapshot, DesktopPreferences, DesktopSnapshot, EnvironmentSnapshot, LogPage,
-    SettingsSnapshot, UpdateResult,
+    ActionAccepted, AppSnapshot, ArchiveDeleteResult, ArchiveRestoreResult, ArchivesSnapshot,
+    DesktopPreferences, DesktopSnapshot, EnvironmentSnapshot, LogPage, SettingsSnapshot,
+    UpdateResult,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -84,6 +85,36 @@ pub fn restart_app(app: AppHandle, state: State<'_, Arc<AppState>>) {
 #[tauri::command]
 pub fn get_desktop_snapshot(state: State<'_, Arc<AppState>>) -> DesktopSnapshot {
     state.desktop_snapshot()
+}
+
+/// 归档会话列表:运行中优先读取 live plugin 的归档集合,停止时读取 JSON。
+#[tauri::command]
+pub fn archives_get_snapshot(state: State<'_, Arc<AppState>>) -> Result<ArchivesSnapshot, String> {
+    state.archives_get_snapshot()
+}
+
+/// 恢复一个归档会话:运行中走插件热接口,停止时原子更新 workspace.json。
+#[tauri::command]
+pub fn archives_restore(
+    session_id: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<ArchiveRestoreResult, String> {
+    state.archives_restore(&session_id)
+}
+
+/// 永久删除一个归档会话:运行中走插件热接口,停止时原子更新 JSON 与会话文件。
+#[tauri::command]
+pub fn archives_delete(
+    session_id: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<ArchiveDeleteResult, String> {
+    state.archives_delete(&session_id)
+}
+
+/// 永久删除全部归档会话:运行中走插件热接口,停止时批量更新 JSON 与会话文件。
+#[tauri::command]
+pub fn archives_delete_all(state: State<'_, Arc<AppState>>) -> Result<ArchiveDeleteResult, String> {
+    state.archives_delete_all()
 }
 
 /// 保存桌面偏好(Rust 持久化),并应用 autostart/托盘/主题副作用。
