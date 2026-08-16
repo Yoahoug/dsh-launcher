@@ -5,7 +5,7 @@ import userEvent from '@testing-library/user-event'
 import App from '@/App'
 import { FirstRunPage } from '@/components/first-run/first-run'
 import { ToastProvider } from '@/components/ui/toast'
-import { mockApi } from '@/lib/mock'
+import { __resetDshView, mockApi } from '@/lib/mock'
 
 describe('FirstRunPage 流程', () => {
   it('欢迎 → 选择仓库 → 检测环境 → 完成', async () => {
@@ -85,6 +85,21 @@ describe('App 首次运行门控', () => {
     expect(await screen.findByText('工具链')).toBeInTheDocument()
     expect(screen.getByRole('radiogroup', { name: '启动方式' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '普通启动' })).toBeInTheDocument()
+  })
+})
+
+describe('启动模式文案', () => {
+  it('普通模式不要求本地仓库,开发模式仍给出仓库提示', async () => {
+    window.history.replaceState(null, '', '/?mock=no-repo')
+    __resetDshView()
+    render(<App />)
+    expect(await screen.findByText('普通模式使用安装包内预构建 Harness；首次启动只做一次运行时预配。')).toBeInTheDocument()
+    expect(screen.queryByText('尚未配置可用的 DeepSeek Harness 仓库')).not.toBeInTheDocument()
+
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('radio', { name: '开发模式 · HMR' }))
+    expect(await screen.findByText('尚未配置可用的 DeepSeek Harness 仓库')).toBeInTheDocument()
+    window.history.replaceState(null, '', '/')
   })
 })
 

@@ -66,6 +66,9 @@ function snapshot(partial: Partial<AppSnapshot>): AppSnapshot {
 
 const SNAPSHOTS: Record<string, AppSnapshot> = {
   idle: snapshot({}),
+  'no-repo': snapshot({
+    repo: { ...baseRepo, branch: '', behind: -1, remoteUpToDate: false },
+  }),
   running: snapshot({
     state: 'running', mode: 'normal', url: 'http://127.0.0.1:3080/',
     webPid: 88321, startedAt: Date.now() - 600_000, readyAt: Date.now() - 590_000,
@@ -208,7 +211,7 @@ export function __resetDshView() {
 /** 模拟启动流程(runAction start/dev/update/rebuild 共用)。 */
 function simulateStart(mode: 'normal' | 'dev') {
   emitDshView({ status: 'creating', pendingEnter: true, error: '正在启动 DSH 服务并加载 DeepSeek 界面,就绪后自动进入…' })
-  patch({ state: 'starting', busy: true, mode, phase: mode === 'dev' ? '启动开发模式…' : '启动 dsh web…' })
+  patch({ state: 'starting', busy: true, mode, phase: mode === 'dev' ? '启动开发模式…' : '准备正式运行时…' })
   later(() => {
     patch({
       state: 'running', busy: false, url: 'http://127.0.0.1:3080/',

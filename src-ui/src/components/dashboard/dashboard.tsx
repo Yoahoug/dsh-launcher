@@ -28,8 +28,8 @@ export function Dashboard({
       </div>
     )
   }
-  // 仓库不可用(未配置/非 git 仓库)时给出下一步指引:克隆或安装环境后再启动
-  const noRepo = snap.repo.behind < 0 && !snap.repo.branch
+  // 只有开发模式依赖本地仓库；普通模式使用安装包内的预构建 Harness。
+  const noRepo = mode === 'dev' && snap.repo.behind < 0 && !snap.repo.branch
   return (
     <div className="h-full overflow-y-auto px-6 py-8">
       <div className="mx-auto flex max-w-[720px] flex-col gap-4">

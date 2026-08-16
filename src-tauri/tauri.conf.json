@@ -30,6 +30,9 @@
   },
   "bundle": {
     "active": true,
+    "resources": {
+      "../bundled/harness": "harness"
+    },
     "targets": [
       "app",
       "dmg",

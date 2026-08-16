@@ -55,12 +55,40 @@ pub fn take_update_restart_pending() -> bool {
     true
 }
 
-/// 运行态目录:pid 文件、状态快照、日志、托管 Node。
-pub fn state_dir() -> PathBuf {
+/// 应用数据目录:运行态、日志、托管工具链和 packaged Harness。
+///
+/// 保留 `DSH_LAUNCHER_STATE_DIR` 覆盖以支持隔离测试和迁移；默认路径按平台选择，
+/// 不把 macOS/Windows 的用户数据写进 Unix 专用目录。
+pub fn app_data_dir() -> PathBuf {
     if let Ok(d) = std::env::var("DSH_LAUNCHER_STATE_DIR") {
         return PathBuf::from(d);
     }
-    Path::new(&home_dir()).join(".local/state/dsh-launcher")
+    #[cfg(windows)]
+    {
+        if let Ok(d) = std::env::var("LOCALAPPDATA") {
+            return PathBuf::from(d).join("dsh-launcher");
+        }
+        return Path::new(&home_dir()).join(".local/state/dsh-launcher");
+    }
+    #[cfg(target_os = "macos")]
+    {
+        return Path::new(&home_dir()).join("Library/Application Support/dsh-launcher");
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        if let Ok(d) = std::env::var("XDG_STATE_HOME") {
+            return PathBuf::from(d).join("dsh-launcher");
+        }
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        Path::new(&home_dir()).join(".local/state/dsh-launcher")
+    }
+}
+
+/// 运行态目录:pid 文件、状态快照、日志、托管 Node。
+pub fn state_dir() -> PathBuf {
+    app_data_dir()
 }
 
 pub fn logs_dir() -> PathBuf {

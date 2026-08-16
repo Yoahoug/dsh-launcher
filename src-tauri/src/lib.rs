@@ -31,13 +31,135 @@ use crate::contract::{LogEntry, LogLevel, EVENT_LOG_APPENDED};
 use crate::log_hub::LogSink;
 use crate::services::runtime::{self, Tools};
 use crate::services::supervisor::Supervisor;
-use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 
 /// 召回主窗口:第二实例触发时显示并聚焦。
 fn recall_main_window(app: &tauri::AppHandle) {
     crate::tray::show_main_window(app);
+}
+
+/// setup 后的后台初始化:安全校验、工具解析、迁移、已有 Host 召回和 repo 快照都不阻塞首帧。
+fn bootstrap_async(app: tauri::AppHandle, state: Arc<state::AppState>) {
+    let log_hub = state.log_hub.clone();
+    if let Err(e) = catalog::verify_embedded() {
+        log_hub.append("launcher", LogLevel::Err, &format!("catalog 自检失败:{e}"));
+        state.set_bootstrap_error(&app, format!("catalog 自检失败(安全失败,拒绝启动):{e}"));
+        return;
+    }
+    let cat = match catalog::load_catalog() {
+        Ok(cat) => cat,
+        Err(e) => {
+            log_hub.append("launcher", LogLevel::Err, &format!("catalog 加载失败:{e}"));
+            state.set_bootstrap_error(&app, format!("catalog 加载失败(安全失败,拒绝启动):{e}"));
+            return;
+        }
+    };
+    log_hub.append(
+        "launcher",
+        LogLevel::Info,
+        &format!(
+            "runtime catalog v{} 验签通过({} 个组件,全部国内镜像)",
+            cat.schema,
+            cat.components.len()
+        ),
+    );
+
+    let recovered = ops::recover_stale(&log_hub);
+    if !recovered.is_empty() {
+        log_hub.append(
+            "launcher",
+            LogLevel::Warn,
+            &format!(
+                "检测到 {} 个上次中断的操作,已标记为 interrupted(请检查后重试)",
+                recovered.len()
+            ),
+        );
+    }
+
+    // 有效 packaged manifest 走快速路径，不做重复工具扫描；首次预配或开发模式再按需扫描。
+    if runtime::packaged_runtime_fast_path_available(&app) {
+        log_hub.append(
+            "launcher",
+            LogLevel::Info,
+            "检测到有效 packaged 运行时 manifest，跳过重复工具扫描",
+        );
+    } else {
+        state.refresh_tools();
+        if state.tools.lock().unwrap().pnpm.is_none() {
+            log_hub.append(
+                "launcher",
+                LogLevel::Warn,
+                "未找到 pnpm:开发模式/更新并构建不可用,普通模式首次启动会尝试安装",
+            );
+        }
+        if state.tools.lock().unwrap().git.is_none() {
+            log_hub.append(
+                "launcher",
+                LogLevel::Warn,
+                if cfg!(windows) {
+                    "未找到系统 git:开发模式/克隆/更新并构建不可用,可「安装托管工具链」安装托管 MinGit"
+                } else {
+                    "未找到系统 git:开发模式/克隆/更新并构建不可用,请安装 Xcode Command Line Tools 或 Homebrew git"
+                },
+            );
+        }
+    }
+
+    let report = migration::run(&state.log_hub);
+    if report.old_daemon_terminated.is_some() {
+        log::info!("迁移:已终止旧 Node daemon,由桌面核心接管");
+    }
+
+    // 召回上次 detach 保留的 dsh web(三重校验:pid 存活 + 命令行 + 端口)。
+    if let Some(m) = state.supervisor.recall() {
+        let cmd = crate::services::supervisor::process_cmdline(m.pid);
+        let is_dsh = cmd.is_some_and(|c| {
+            c.contains("dsh web") || c.contains("apps/cli/lib/bin.js") || c.contains("bin.js web")
+        });
+        let on_port = crate::services::supervisor::port_holder_pid(config::load().port)
+            .is_some_and(|holder| {
+                crate::services::supervisor::process_descends_from(holder, m.pid)
+            });
+        if is_dsh && on_port {
+            log_hub.append(
+                "launcher",
+                LogLevel::Ok,
+                &format!("召回上次运行的 dsh web(PID {})", m.pid),
+            );
+            state.set_snapshot(&app, |s| {
+                s.state = crate::contract::LauncherState::Running;
+                s.web_pid = Some(m.pid);
+                s.url = m.url.clone();
+                s.started_at = m.started_at;
+                s.ready_at = m.ready_at;
+                s.mode = crate::contract::LauncherMode::Normal;
+            });
+        } else {
+            log_hub.append(
+                "launcher",
+                LogLevel::Warn,
+                "上次运行的 dsh web 记录失效(进程已退出或端口变化),忽略",
+            );
+            state.supervisor.detach();
+        }
+    }
+
+    // catalog 已安全通过后即可允许启动；repo 快照仍独立后台刷新，不成为普通启动前置条件。
+    state.mark_bootstrap_ready();
+    let repo_state = state.clone();
+    let repo_app = app.clone();
+    std::thread::spawn(move || repo_state.refresh_repo_emit(&repo_app));
+
+    if crate::config::take_update_restart_pending() {
+        let restart_handle = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            restart_handle.restart();
+        });
+    }
+    crate::lifecycle::apply_preferences(&app);
+    crate::dsh_view::maybe_enter_on_boot(&app);
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -146,129 +268,18 @@ pub fn run() {
                 ),
             );
 
-            // 崩溃恢复:先探测事实(journal 中 queued/running → interrupted),不续跑
-            let recovered = ops::recover_stale(&log_hub);
-            if !recovered.is_empty() {
-                log_hub.append(
-                    "launcher",
-                    LogLevel::Warn,
-                    &format!(
-                        "检测到 {} 个上次中断的操作,已标记为 interrupted(请检查后重试)",
-                        recovered.len()
-                    ),
-                );
-            }
-
-            // catalog 自检(签名失败即安全失败,阻止继续)
-            if let Err(e) = catalog::verify_embedded() {
-                log_hub.append("launcher", LogLevel::Err, &format!("catalog 自检失败:{e}"));
-                return Err(format!("catalog 自检失败(安全失败,拒绝启动):{e}").into());
-            }
-            let cat = catalog::load_catalog().expect("内置 catalog 必须可解析");
-            log_hub.append(
-                "launcher",
-                LogLevel::Info,
-                &format!(
-                    "runtime catalog v{} 验签通过({} 个组件,全部国内镜像)",
-                    cat.schema,
-                    cat.components.len()
-                ),
-            );
-
             let supervisor = Arc::new(Supervisor::new(log_hub.clone()));
-
-            // 工具解析(可能为 None,命令层给出可读诊断)
-            let dsh_node_dir: Option<PathBuf> =
-                runtime::resolve_dsh_node().and_then(|(bin, _)| bin.parent().map(PathBuf::from));
-            let tools = Tools {
-                pnpm: runtime::resolve_executable("pnpm"),
-                git: runtime::resolve_executable("git"),
-                dsh_node_dir,
-            };
-            if tools.pnpm.is_none() {
-                log_hub.append(
-                    "launcher",
-                    LogLevel::Warn,
-                    "未找到 pnpm:启动/开发模式/更新并构建不可用,可「安装托管工具链」",
-                );
-            }
-            if tools.git.is_none() {
-                log_hub.append(
-                    "launcher",
-                    LogLevel::Warn,
-                    if cfg!(windows) {
-                        "未找到系统 git:克隆/更新并构建不可用,可「安装托管工具链」安装托管 MinGit"
-                    } else {
-                        "未找到系统 git:克隆/更新并构建不可用,请安装 Xcode Command Line Tools 或 Homebrew git"
-                    },
-                );
-            }
-            // 托管工具优先(active pointer)
-            let tools = Tools {
-                pnpm: crate::toolchain::resolve_pnpm(&tools),
-                git: crate::toolchain::resolve_git(&tools),
-                dsh_node_dir: tools.dsh_node_dir,
-            };
-
             let ops = ops::OperationCoordinator::new(log_hub.clone(), Arc::new(|_| {}));
             let state = Arc::new(state::AppState::new(
                 log_hub.clone(),
                 supervisor,
-                tools,
+                Tools::empty(),
                 ops,
                 timings.clone(),
             ));
             app.manage(state.clone());
             app.manage(Arc::new(chat::ChatManager::new()));
             app.manage(Arc::new(dsh_view::DshViewManager::new()));
-
-            // 用户上次选择稍后重启:更新包已在本地,启动新进程后自动完成一次重启并消费标记。
-            if crate::config::take_update_restart_pending() {
-                let restart_handle = app_handle.clone();
-                std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_millis(300));
-                    restart_handle.restart();
-                });
-            }
-
-            // 迁移旧 Node daemon(幂等):终止旧 daemon、清理 token、记录版本
-            let report = migration::run(&state.log_hub);
-            if report.old_daemon_terminated.is_some() {
-                log::info!("迁移:已终止旧 Node daemon,由桌面核心接管");
-            }
-
-            // 召回上次 detach 保留的 dsh web(三重校验:pid 存活 + 命令行 + 端口)
-            if let Some(m) = state.supervisor.recall() {
-                let cmd = crate::services::supervisor::process_cmdline(m.pid);
-                let is_dsh = cmd.is_some_and(|c| c.contains("dsh web") || c.contains("dsh"));
-                let on_port = crate::services::supervisor::port_holder_pid(config::load().port)
-                    .is_some_and(|holder| {
-                        crate::services::supervisor::process_descends_from(holder, m.pid)
-                    });
-                if is_dsh && on_port {
-                    log_hub.append(
-                        "launcher",
-                        LogLevel::Ok,
-                        &format!("召回上次运行的 dsh web(PID {})", m.pid),
-                    );
-                    state.set_snapshot(&app_handle, |s| {
-                        s.state = crate::contract::LauncherState::Running;
-                        s.web_pid = Some(m.pid);
-                        s.url = m.url.clone();
-                        s.started_at = m.started_at;
-                        s.ready_at = m.ready_at;
-                        s.mode = crate::contract::LauncherMode::Normal;
-                    });
-                } else {
-                    // 校验不通过:仅清理记录,不杀进程
-                    log_hub.append(
-                        "launcher",
-                        LogLevel::Warn,
-                        "上次运行的 dsh web 记录失效(进程已退出或端口变化),忽略",
-                    );
-                    state.supervisor.detach();
-                }
-            }
 
             // 托盘:状态动态菜单 + 左键召回
             if let Err(e) = tray::setup(&app_handle) {
@@ -277,19 +288,6 @@ pub fn run() {
             // 性能测量点:主窗口已创建并可见(首帧不等待网络/Git/更新/完整环境检查)
             timings.mark("main_window_visible");
             state.emit_perf(&app_handle);
-
-            // 仓库状态快照不能阻塞 AppKit 首帧；桌面目录的 macOS 权限检查、
-            // Git 锁或异常仓库都可能让外部命令变慢。
-            let repo_state = state.clone();
-            let repo_app = app_handle.clone();
-            std::thread::spawn(move || repo_state.refresh_repo_emit(&repo_app));
-
-            // 应用偏好副作用(autostart 同步、托盘可见性)
-            lifecycle::apply_preferences(&app_handle);
-
-            // 启动时若发现受管 DSH 已正常运行,自动恢复并进入 DeepSeek 工作区
-            // (保留返回启动器入口;窗口外壳仍由主 WebView 提供)
-            dsh_view::maybe_enter_on_boot(&app_handle);
 
             // 静默启动:偏好开启时首帧隐藏窗口(托盘可召回)
             let prefs = state.preferences.lock().unwrap().clone();
@@ -301,6 +299,11 @@ pub fn run() {
 
             timings.mark("tauri_ready");
             state.emit_perf(&app_handle);
+
+            // 深度校验、工具扫描、迁移、repo 刷新和 Host 召回均异步执行，窗口先可见。
+            let bootstrap_app = app_handle.clone();
+            let bootstrap_state = state.clone();
+            std::thread::spawn(move || bootstrap_async(bootstrap_app, bootstrap_state));
 
             Ok(())
         })

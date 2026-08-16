@@ -2,9 +2,12 @@
 // App 自身不依赖 Node;本模块只负责为 dsh 子进程准备兼容 Node(^22.19 || >=24)。
 use crate::config::state_dir;
 use crate::log_hub::LogHub;
+use crate::ops::{CancellationToken, OperationError};
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tauri::{AppHandle, Manager};
 
 /// dsh engines 范围描述(提示文案)。
 pub const NODE_RANGE_MSG: &str = "^22.19 || >=24";
@@ -195,6 +198,475 @@ pub struct Tools {
     pub git: Option<PathBuf>,
     /// dsh 兼容 Node 的 bin 目录(注入子进程 PATH);None = 未找到。
     pub dsh_node_dir: Option<PathBuf>,
+}
+
+/// Tauri resources 中的正式 Harness 根目录名。
+pub const PACKAGED_HARNESS_RESOURCE: &str = "harness";
+const BUNDLE_MANIFEST_FILE: &str = "bundle-manifest.json";
+const RUNTIME_MANIFEST_FILE: &str = "manifest.json";
+const RUNTIME_SCHEMA: u32 = 1;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BundleFile {
+    pub path: String,
+    pub size: u64,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BundleManifest {
+    pub schema: u32,
+    pub bundle_hash: String,
+    pub source_version: Option<String>,
+    pub generated_at: String,
+    pub files: Vec<BundleFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeManifest {
+    pub schema: u32,
+    pub bundle_hash: String,
+    pub harness_root: String,
+    pub cli_entry: String,
+    pub node_binary: String,
+    pub pnpm_binary: String,
+    pub dsh_home: String,
+    pub dependencies_ready: bool,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PackagedRuntime {
+    pub manifest: RuntimeManifest,
+    pub harness_root: PathBuf,
+    pub cli_entry: PathBuf,
+    pub node_binary: PathBuf,
+    pub pnpm_binary: PathBuf,
+    pub dsh_home: PathBuf,
+    pub tools: Tools,
+}
+
+impl Tools {
+    pub fn empty() -> Self {
+        Self {
+            pnpm: None,
+            git: None,
+            dsh_node_dir: None,
+        }
+    }
+}
+
+fn runtime_root() -> PathBuf {
+    state_dir().join("runtime")
+}
+
+fn runtime_manifest_path() -> PathBuf {
+    runtime_root().join(RUNTIME_MANIFEST_FILE)
+}
+
+fn harness_versions_dir() -> PathBuf {
+    state_dir().join("harness-versions")
+}
+
+fn required_bundle_files() -> [&'static str; 6] {
+    [
+        "apps/cli/lib/bin.js",
+        "apps/cli/package.json",
+        "apps/web/dist/index.html",
+        "apps/web/package.json",
+        "package.json",
+        "pnpm-lock.yaml",
+    ]
+}
+
+fn safe_bundle_path(path: &str) -> bool {
+    let p = Path::new(path);
+    !p.is_absolute()
+        && !p
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+}
+
+fn executable_file(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        return std::fs::metadata(path)
+            .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false);
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+/// 读取并校验安装包随附的 bundle manifest。
+/// 这里不扫描所有内容的 SHA-256，避免每次启动重新遍历大型 web dist；首次 bundle
+/// 生成时已记录每个文件的校验值，运行时仍验证结构、路径、大小和关键入口存在。
+pub fn load_bundle_manifest(bundle_root: &Path) -> Result<BundleManifest, String> {
+    let path = bundle_root.join(BUNDLE_MANIFEST_FILE);
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|e| format!("安装包缺少 Harness manifest:{} ({e})", path.display()))?;
+    let manifest: BundleManifest = serde_json::from_str(&raw)
+        .map_err(|e| format!("Harness bundle manifest 无法解析:{} ({e})", path.display()))?;
+    if manifest.schema != RUNTIME_SCHEMA {
+        return Err(format!(
+            "Harness bundle manifest schema 不兼容:{}",
+            manifest.schema
+        ));
+    }
+    if manifest.bundle_hash.len() != 64
+        || !manifest.bundle_hash.chars().all(|c| c.is_ascii_hexdigit())
+    {
+        return Err("Harness bundle manifest 的 bundleHash 非法".into());
+    }
+    if manifest.files.is_empty() {
+        return Err("Harness bundle manifest 未列出正式运行文件".into());
+    }
+    for file in &manifest.files {
+        if !safe_bundle_path(&file.path) || file.sha256.len() != 64 {
+            return Err(format!(
+                "Harness bundle manifest 文件路径或 SHA-256 非法:{}",
+                file.path
+            ));
+        }
+        let path = bundle_root.join(&file.path);
+        let metadata = std::fs::metadata(&path)
+            .map_err(|e| format!("Harness bundle 文件缺失:{} ({e})", path.display()))?;
+        if !metadata.is_file() || metadata.len() != file.size {
+            return Err(format!("Harness bundle 文件大小不匹配:{}", path.display()));
+        }
+    }
+    for required in required_bundle_files() {
+        if !bundle_root.join(required).is_file() {
+            return Err(format!("安装包缺少 Harness 运行入口:{required}"));
+        }
+    }
+    if !bundle_root.join("apps/web/dist").is_dir() {
+        return Err("安装包缺少 apps/web/dist/".into());
+    }
+    Ok(manifest)
+}
+
+fn runtime_manifest_from_file() -> Result<Option<RuntimeManifest>, String> {
+    let path = runtime_manifest_path();
+    let Ok(raw) = std::fs::read_to_string(&path) else {
+        return Ok(None);
+    };
+    Ok(serde_json::from_str(&raw).ok())
+}
+
+/// 校验运行时 manifest；`node_version` 由调用方在需要时探测，便于纯函数单测。
+pub fn validate_runtime_manifest(
+    manifest: &RuntimeManifest,
+    bundle: &BundleManifest,
+    node_version: Option<&str>,
+) -> Result<(), String> {
+    if manifest.schema != RUNTIME_SCHEMA {
+        return Err(format!("运行时 manifest schema 不兼容:{}", manifest.schema));
+    }
+    if manifest.bundle_hash != bundle.bundle_hash {
+        return Err("运行时 manifest bundleHash 与安装包不匹配".into());
+    }
+    let harness_root = Path::new(&manifest.harness_root);
+    let cli_entry = Path::new(&manifest.cli_entry);
+    let node_binary = Path::new(&manifest.node_binary);
+    let pnpm_binary = Path::new(&manifest.pnpm_binary);
+    let dsh_home = Path::new(&manifest.dsh_home);
+    if !harness_root.is_dir() {
+        return Err("运行时 Harness 根目录不存在".into());
+    }
+    if cli_entry != harness_root.join("apps/cli/lib/bin.js") || !cli_entry.is_file() {
+        return Err("运行时 CLI 入口缺失或路径不匹配".into());
+    }
+    if !harness_root.join("apps/web/dist").is_dir() {
+        return Err("运行时 apps/web/dist 缺失".into());
+    }
+    if !harness_root.join("node_modules").is_dir() || !manifest.dependencies_ready {
+        return Err("运行时生产依赖尚未安装".into());
+    }
+    if !executable_file(node_binary) {
+        return Err("运行时 Node 可执行文件缺失".into());
+    }
+    let Some(node_version) = node_version else {
+        return Err("运行时 Node 版本无法读取".into());
+    };
+    if !node_in_range(node_version) {
+        return Err(format!(
+            "运行时 Node {node_version} 不兼容,需要 {}",
+            NODE_RANGE_MSG
+        ));
+    }
+    if !executable_file(pnpm_binary) {
+        return Err("运行时 pnpm 可执行文件缺失".into());
+    }
+    if !dsh_home.is_dir() {
+        return Err("运行时 DSH_HOME 不可访问".into());
+    }
+    Ok(())
+}
+
+fn atomic_write_runtime_manifest(manifest: &RuntimeManifest) -> Result<(), String> {
+    let dir = runtime_root();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建运行时目录失败:{e}"))?;
+    let tmp = dir.join(format!("manifest.json.tmp-{}", std::process::id()));
+    let json = serde_json::to_string_pretty(manifest)
+        .map_err(|e| format!("序列化运行时 manifest 失败:{e}"))?;
+    {
+        let mut file =
+            std::fs::File::create(&tmp).map_err(|e| format!("写入运行时 manifest 失败:{e}"))?;
+        use std::io::Write;
+        file.write_all(json.as_bytes())
+            .map_err(|e| format!("写入运行时 manifest 失败:{e}"))?;
+        file.sync_all()
+            .map_err(|e| format!("运行时 manifest fsync 失败:{e}"))?;
+    }
+    std::fs::rename(&tmp, runtime_manifest_path())
+        .map_err(|e| format!("发布运行时 manifest 失败:{e}"))
+}
+
+fn copy_bundle_tree(source: &Path, target: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(target).map_err(|e| format!("创建 Harness 目录失败:{e}"))?;
+    for entry in std::fs::read_dir(source).map_err(|e| format!("读取 Harness 资源失败:{e}"))?
+    {
+        let entry = entry.map_err(|e| format!("读取 Harness 资源失败:{e}"))?;
+        let from = entry.path();
+        let to = target.join(entry.file_name());
+        let metadata = std::fs::symlink_metadata(&from)
+            .map_err(|e| format!("读取 Harness 资源元数据失败:{} ({e})", from.display()))?;
+        if metadata.file_type().is_symlink() {
+            return Err(format!("Harness bundle 不允许符号链接:{}", from.display()));
+        }
+        if metadata.is_dir() {
+            copy_bundle_tree(&from, &to)?;
+        } else if metadata.is_file() {
+            std::fs::copy(&from, &to)
+                .map_err(|e| format!("复制 Harness 文件失败:{} ({e})", from.display()))?;
+        }
+    }
+    Ok(())
+}
+
+fn install_production_dependencies(
+    log: &Arc<LogHub>,
+    pnpm: &Path,
+    harness_root: &Path,
+    tools: &Tools,
+    token: &CancellationToken,
+) -> Result<(), OperationError> {
+    token.check()?;
+    let mut cmd = std::process::Command::new(pnpm);
+    cmd.args(["install", "--prod", "--frozen-lockfile"]);
+    cmd.current_dir(harness_root);
+    cmd.envs(tools.env());
+    cmd.env("NODE_ENV", "production");
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    cmd.stdin(std::process::Stdio::null());
+    let output = cmd
+        .output()
+        .map_err(|e| OperationError::Failed(format!("无法启动 pnpm 生产依赖安装:{}", e)))?;
+    token.check()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for line in stdout.lines() {
+        log.append("pnpm", crate::contract::LogLevel::Info, line);
+    }
+    for line in stderr.lines() {
+        log.append("pnpm", crate::contract::LogLevel::Warn, line);
+    }
+    if !output.status.success() {
+        let tail = stderr
+            .lines()
+            .chain(stdout.lines())
+            .rev()
+            .take(12)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(OperationError::Failed(format!(
+            "pnpm 生产依赖安装失败(code={:?}){}",
+            output.status.code(),
+            if tail.is_empty() {
+                String::new()
+            } else {
+                format!("\n{tail}")
+            }
+        )));
+    }
+    Ok(())
+}
+
+fn managed_dsh_home() -> PathBuf {
+    state_dir().join("dsh-home")
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// 读取有效 manifest；有效时 normal 启动不会复制 Harness、安装工具或重装依赖。
+pub fn load_valid_runtime_manifest(
+    bundle: &BundleManifest,
+) -> Result<Option<RuntimeManifest>, String> {
+    let Some(manifest) = runtime_manifest_from_file()? else {
+        return Ok(None);
+    };
+    let node_version = probe_version(Path::new(&manifest.node_binary));
+    match validate_runtime_manifest(&manifest, bundle, node_version.as_deref()) {
+        Ok(()) => Ok(Some(manifest)),
+        Err(_) => Ok(None),
+    }
+}
+
+/// setup 后用于选择 bootstrap 分支的轻量检查；有效时不触发 Node/pnpm/git 全量扫描。
+pub fn packaged_runtime_fast_path_available(app: &AppHandle) -> bool {
+    let Ok(resource_dir) = app.path().resource_dir() else {
+        return false;
+    };
+    let bundle_root = resource_dir.join(PACKAGED_HARNESS_RESOURCE);
+    let Ok(bundle) = load_bundle_manifest(&bundle_root) else {
+        return false;
+    };
+    matches!(load_valid_runtime_manifest(&bundle), Ok(Some(_)))
+}
+
+/// 预配正式 Harness。该函数只接受安装包资源，不读取 repo_path，也不执行本地 build。
+pub fn ensure_packaged_runtime(
+    app: &AppHandle,
+    log: &Arc<LogHub>,
+    token: &CancellationToken,
+    on_stage: &dyn Fn(&str),
+) -> Result<PackagedRuntime, OperationError> {
+    token.check()?;
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .map_err(|e| OperationError::Failed(format!("无法定位应用资源目录:{e}")))?;
+    let bundle_root = resource_dir.join(PACKAGED_HARNESS_RESOURCE);
+    let bundle = load_bundle_manifest(&bundle_root).map_err(OperationError::Failed)?;
+    if let Some(manifest) = load_valid_runtime_manifest(&bundle).map_err(OperationError::Failed)? {
+        let harness_root = PathBuf::from(&manifest.harness_root);
+        let cli_entry = PathBuf::from(&manifest.cli_entry);
+        let node_binary = PathBuf::from(&manifest.node_binary);
+        let pnpm_binary = PathBuf::from(&manifest.pnpm_binary);
+        let dsh_home = PathBuf::from(&manifest.dsh_home);
+        let tools = Tools {
+            pnpm: Some(pnpm_binary.clone()),
+            git: None,
+            dsh_node_dir: node_binary.parent().map(Path::to_path_buf),
+        };
+        log.append(
+            "launcher",
+            crate::contract::LogLevel::Info,
+            "正式运行时 manifest 有效,跳过预配",
+        );
+        return Ok(PackagedRuntime {
+            manifest,
+            harness_root,
+            cli_entry,
+            node_binary,
+            pnpm_binary,
+            dsh_home,
+            tools,
+        });
+    }
+
+    on_stage("检查兼容 Node…");
+    let mut tools = Tools::empty();
+    if resolve_dsh_node().is_none() {
+        crate::toolchain::ensure_tool(log, crate::toolchain::Tool::Node, token, on_stage, &tools)?;
+    }
+    let node_binary = resolve_dsh_node().map(|(path, _)| path).ok_or_else(|| {
+        OperationError::Failed(format!(
+            "未找到兼容 Node {},无法准备正式运行时",
+            NODE_RANGE_MSG
+        ))
+    })?;
+    tools.dsh_node_dir = node_binary.parent().map(Path::to_path_buf);
+
+    on_stage("检查或安装 pnpm…");
+    tools.pnpm = resolve_executable("pnpm");
+    if crate::toolchain::resolve_pnpm(&tools).is_none() {
+        crate::toolchain::ensure_tool(log, crate::toolchain::Tool::Pnpm, token, on_stage, &tools)?;
+    }
+    let pnpm_binary = crate::toolchain::resolve_pnpm(&tools)
+        .or_else(|| resolve_executable("pnpm"))
+        .ok_or_else(|| OperationError::Failed("未找到 pnpm,无法安装正式依赖".into()))?;
+    tools.pnpm = Some(pnpm_binary.clone());
+
+    let dsh_home = managed_dsh_home();
+    std::fs::create_dir_all(&dsh_home).map_err(|e| {
+        OperationError::Failed(format!(
+            "创建 managed DSH_HOME 失败:{} ({e})",
+            dsh_home.display()
+        ))
+    })?;
+    let versions = harness_versions_dir();
+    std::fs::create_dir_all(&versions)
+        .map_err(|e| OperationError::Failed(format!("创建 Harness 版本目录失败:{e}")))?;
+    let staging = versions.join(format!(
+        ".provision-{}-{}",
+        bundle.bundle_hash,
+        std::process::id()
+    ));
+    let harness_root = if versions.join(&bundle.bundle_hash).exists() {
+        versions.join(format!("{}-{}", bundle.bundle_hash, now_ms()))
+    } else {
+        versions.join(&bundle.bundle_hash)
+    };
+    let _ = std::fs::remove_dir_all(&staging);
+    copy_bundle_tree(&bundle_root, &staging).map_err(OperationError::Failed)?;
+    on_stage("安装生产依赖…");
+    install_production_dependencies(log, &pnpm_binary, &staging, &tools, token)?;
+    token.check()?;
+    std::fs::rename(&staging, &harness_root)
+        .map_err(|e| OperationError::Failed(format!("发布 Harness 版本目录失败:{e}")))?;
+
+    let manifest = RuntimeManifest {
+        schema: RUNTIME_SCHEMA,
+        bundle_hash: bundle.bundle_hash.clone(),
+        harness_root: harness_root.display().to_string(),
+        cli_entry: harness_root
+            .join("apps/cli/lib/bin.js")
+            .display()
+            .to_string(),
+        node_binary: node_binary.display().to_string(),
+        pnpm_binary: pnpm_binary.display().to_string(),
+        dsh_home: dsh_home.display().to_string(),
+        dependencies_ready: true,
+        created_at: now_ms().to_string(),
+    };
+    validate_runtime_manifest(&manifest, &bundle, probe_version(&node_binary).as_deref())
+        .map_err(OperationError::Failed)?;
+    atomic_write_runtime_manifest(&manifest).map_err(OperationError::Failed)?;
+    let cli_entry = PathBuf::from(&manifest.cli_entry);
+    log.append(
+        "launcher",
+        crate::contract::LogLevel::Ok,
+        &format!("正式 Harness 预配完成 → {}", harness_root.display()),
+    );
+    Ok(PackagedRuntime {
+        manifest,
+        harness_root,
+        cli_entry,
+        node_binary,
+        pnpm_binary,
+        dsh_home,
+        tools,
+    })
 }
 
 impl Tools {
@@ -472,6 +944,50 @@ fn tools_now() -> Tools {
 mod tests {
     use super::*;
 
+    fn manifest_fixture() -> (BundleManifest, RuntimeManifest, PathBuf) {
+        let base = std::env::temp_dir().join(format!(
+            "dsh-runtime-manifest-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("harness");
+        std::fs::create_dir_all(root.join("apps/cli/lib")).unwrap();
+        std::fs::create_dir_all(root.join("apps/web/dist")).unwrap();
+        std::fs::create_dir_all(root.join("node_modules")).unwrap();
+        std::fs::create_dir_all(base.join("dsh-home")).unwrap();
+        std::fs::write(root.join("apps/cli/lib/bin.js"), b"fixture").unwrap();
+        std::fs::write(base.join("node"), b"node").unwrap();
+        std::fs::write(base.join("pnpm"), b"pnpm").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(base.join("node"), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+            std::fs::set_permissions(base.join("pnpm"), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        let bundle = BundleManifest {
+            schema: 1,
+            bundle_hash: "a".repeat(64),
+            source_version: Some("fixture".into()),
+            generated_at: "now".into(),
+            files: Vec::new(),
+        };
+        let manifest = RuntimeManifest {
+            schema: 1,
+            bundle_hash: bundle.bundle_hash.clone(),
+            harness_root: root.display().to_string(),
+            cli_entry: root.join("apps/cli/lib/bin.js").display().to_string(),
+            node_binary: base.join("node").display().to_string(),
+            pnpm_binary: base.join("pnpm").display().to_string(),
+            dsh_home: base.join("dsh-home").display().to_string(),
+            dependencies_ready: true,
+            created_at: "now".into(),
+        };
+        (bundle, manifest, base)
+    }
+
     #[test]
     fn parse_version_formats() {
         assert_eq!(parse_node_version("v24.19.0"), Some([24, 19, 0]));
@@ -515,5 +1031,69 @@ mod tests {
             assert!(p.is_file(), "bin 必须存在: {}", p.display());
             assert!(node_in_range(&v), "版本必须在范围: {v}");
         }
+    }
+
+    #[test]
+    fn runtime_manifest_missing_requires_provision() {
+        let _g = crate::test_lock::ENV_LOCK.lock().unwrap();
+        let base = std::env::temp_dir().join(format!("dsh-runtime-missing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::env::set_var("DSH_LAUNCHER_STATE_DIR", &base);
+        let (bundle, _, _) = manifest_fixture();
+        assert!(load_valid_runtime_manifest(&bundle).unwrap().is_none());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn runtime_manifest_hash_mismatch_is_rejected() {
+        let (bundle, mut manifest, base) = manifest_fixture();
+        manifest.bundle_hash = "b".repeat(64);
+        let error = validate_runtime_manifest(&manifest, &bundle, Some("v24.0.0")).unwrap_err();
+        assert!(error.contains("bundleHash"));
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn runtime_manifest_missing_cli_is_rejected() {
+        let (bundle, manifest, base) = manifest_fixture();
+        std::fs::remove_file(&manifest.cli_entry).unwrap();
+        let error = validate_runtime_manifest(&manifest, &bundle, Some("v24.0.0")).unwrap_err();
+        assert!(error.contains("CLI"));
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn runtime_manifest_missing_web_dist_is_rejected() {
+        let (bundle, manifest, base) = manifest_fixture();
+        std::fs::remove_dir_all(Path::new(&manifest.harness_root).join("apps/web/dist")).unwrap();
+        let error = validate_runtime_manifest(&manifest, &bundle, Some("v24.0.0")).unwrap_err();
+        assert!(error.contains("apps/web/dist"));
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn runtime_manifest_incompatible_node_is_rejected() {
+        let (bundle, manifest, base) = manifest_fixture();
+        let error = validate_runtime_manifest(&manifest, &bundle, Some("v23.1.0")).unwrap_err();
+        assert!(error.contains("不兼容"));
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn runtime_manifest_missing_pnpm_is_rejected() {
+        let (bundle, manifest, base) = manifest_fixture();
+        std::fs::remove_file(&manifest.pnpm_binary).unwrap();
+        let error = validate_runtime_manifest(&manifest, &bundle, Some("v24.0.0")).unwrap_err();
+        assert!(error.contains("pnpm"));
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn valid_runtime_manifest_skips_provision_checks() {
+        let (bundle, manifest, base) = manifest_fixture();
+        validate_runtime_manifest(&manifest, &bundle, Some("v24.0.0")).unwrap();
+        assert!(safe_bundle_path("apps/cli/lib/bin.js"));
+        assert!(!safe_bundle_path("../outside"));
+        let _ = std::fs::remove_dir_all(base);
     }
 }

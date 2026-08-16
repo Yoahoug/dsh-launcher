@@ -69,7 +69,9 @@ export function ServiceCard({ snap, mode, onModeChange, onAction, onOpenDsh, onS
           <p className="mt-1.5 text-xs text-muted-foreground/80">
             {running
               ? `当前为${snap.mode === 'dev' ? '开发模式（HMR）' : '普通运行'}，服务已由原生核心托管。`
-              : '选择启动方式开始;仓库同步、环境检测等操作请进入下方功能入口。'}
+              : mode === 'dev'
+                ? '开发模式使用本地仓库、源码构建和 dev:web HMR watcher。'
+                : '普通模式使用安装包内预构建 Harness；首次启动只做一次运行时预配。'}
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">

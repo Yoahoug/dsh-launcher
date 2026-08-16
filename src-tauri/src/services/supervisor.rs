@@ -97,6 +97,46 @@ fn build_dsh_web_cmd(
     Ok((label_desc, cmd))
 }
 
+/// 构建 packaged Harness 的正式启动命令。
+/// 与源码启动完全分离:不读取 package.json scripts,不经过 pnpm 或 shell。
+pub(crate) fn build_packaged_web_cmd(
+    node_binary: &Path,
+    cli_entry: &Path,
+    harness_root: &Path,
+    port_s: &str,
+    host: &str,
+    dsh_home: &Path,
+    tools: &Tools,
+) -> Result<(String, std::process::Command), String> {
+    if !node_binary.is_file() {
+        return Err(format!("packaged Node 不存在:{}", node_binary.display()));
+    }
+    if !cli_entry.is_file() {
+        return Err(format!(
+            "packaged DSH CLI 入口不存在:{}",
+            cli_entry.display()
+        ));
+    }
+    if !harness_root.is_dir() {
+        return Err(format!(
+            "packaged Harness 根目录不存在:{}",
+            harness_root.display()
+        ));
+    }
+    let mut cmd = std::process::Command::new(node_binary);
+    cmd.arg(cli_entry);
+    cmd.args(["web", "--host", host, "--port", port_s]);
+    cmd.current_dir(harness_root);
+    cmd.envs(tools.env());
+    cmd.env("DSH_HOME", dsh_home);
+    cmd.env("NODE_ENV", "production");
+    cmd.env("DSH_NO_AUTOOPEN", "1");
+    Ok((
+        format!("packaged dsh web --host {host} --port {port_s}"),
+        cmd,
+    ))
+}
+
 /// 就绪行正则(与 dsh 仓库测试同款)。
 const READY_RE: &str = r"dsh web: (http://[^\s]+)";
 
@@ -186,7 +226,7 @@ impl Supervisor {
         }
     }
 
-    /// 启动 dsh web(--port <port> [--host <host>])。
+    /// 启动源码 dsh web(--port <port> [--host <host>])。
     /// 优先 node 直连仓库声明的 dsh 入口(绕过 pnpm.cmd → cmd.exe → node 包装链,
     /// Windows 上不再冒出多余的 cmd.exe / conhost.exe 进程);仓库未声明 dsh 脚本时回退 pnpm。
     pub fn spawn_web(
@@ -199,7 +239,39 @@ impl Supervisor {
         on_ready: impl Fn(&str) + Send + Sync + 'static,
     ) -> Result<u32, String> {
         let port_s = port.to_string();
-        let (label_desc, mut cmd) = build_dsh_web_cmd(tools, repo_path, &port_s, host, dsh_home)?;
+        let (label_desc, cmd) = build_dsh_web_cmd(tools, repo_path, &port_s, host, dsh_home)?;
+        self.spawn_web_command(label_desc, cmd, on_ready)
+    }
+
+    /// 启动安装包内随附的 DSH Web Host。
+    pub fn spawn_packaged_web(
+        &self,
+        node_binary: &Path,
+        cli_entry: &Path,
+        harness_root: &Path,
+        port: u16,
+        host: &str,
+        dsh_home: &Path,
+        tools: &Tools,
+    ) -> Result<u32, String> {
+        let (label_desc, cmd) = build_packaged_web_cmd(
+            node_binary,
+            cli_entry,
+            harness_root,
+            &port.to_string(),
+            host,
+            dsh_home,
+            tools,
+        )?;
+        self.spawn_web_command(label_desc, cmd, |_url| {})
+    }
+
+    fn spawn_web_command(
+        &self,
+        label_desc: String,
+        mut cmd: std::process::Command,
+        on_ready: impl Fn(&str) + Send + Sync + 'static,
+    ) -> Result<u32, String> {
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
         cmd.stdin(std::process::Stdio::null());
@@ -940,6 +1012,62 @@ mod tests {
         )
         .unwrap();
         assert!(dsh_entry_args(&base.display().to_string()).is_none());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn packaged_command_uses_absolute_node_cli_and_production_env() {
+        let base = std::env::temp_dir().join(format!("dsh-packaged-cmd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let harness = base.join("harness");
+        let cli = harness.join("apps/cli/lib/bin.js");
+        let node = base.join(if cfg!(windows) { "node.exe" } else { "node" });
+        let dsh_home = base.join("dsh-home");
+        std::fs::create_dir_all(cli.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(harness.join("apps/web/dist")).unwrap();
+        std::fs::create_dir_all(&dsh_home).unwrap();
+        std::fs::write(&cli, b"fixture").unwrap();
+        std::fs::write(&node, b"fixture").unwrap();
+        let tools = Tools {
+            pnpm: Some(base.join("pnpm/pnpm")),
+            git: None,
+            dsh_node_dir: Some(base.clone()),
+        };
+        let (_, command) = build_packaged_web_cmd(
+            &node,
+            &cli,
+            &harness,
+            "3080",
+            "127.0.0.1",
+            &dsh_home,
+            &tools,
+        )
+        .unwrap();
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            args,
+            vec![
+                cli.display().to_string(),
+                "web".into(),
+                "--host".into(),
+                "127.0.0.1".into(),
+                "--port".into(),
+                "3080".into()
+            ]
+        );
+        let env = |name: &str| {
+            command
+                .get_envs()
+                .find(|(key, _)| key.to_string_lossy() == name)
+                .and_then(|(_, value)| value.map(|value| value.to_string_lossy().to_string()))
+        };
+        assert_eq!(env("DSH_HOME"), Some(dsh_home.display().to_string()));
+        assert_eq!(env("NODE_ENV"), Some("production".into()));
+        assert_eq!(env("DSH_NO_AUTOOPEN"), Some("1".into()));
+        assert_eq!(command.get_current_dir(), Some(harness.as_path()));
         let _ = std::fs::remove_dir_all(&base);
     }
 }

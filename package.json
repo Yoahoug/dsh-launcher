@@ -9,6 +9,8 @@
   },
   "scripts": {
     "test:ui": "vitest run --config src-ui/vite.config.ts",
+    "test:bundle": "node --test scripts/bundle-harness-source.test.mjs",
+    "bundle:harness": "node scripts/bundle-harness-source.mjs",
     "dev:renderer": "vite --config src-ui/vite.config.ts",
     "build:renderer": "vite build --config src-ui/vite.config.ts",
     "preview:renderer": "vite preview --config src-ui/vite.config.ts",

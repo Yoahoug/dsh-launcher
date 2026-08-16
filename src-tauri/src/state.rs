@@ -38,6 +38,8 @@ pub struct AppState {
     pub snapshot: Mutex<AppSnapshot>,
     pub preferences: Mutex<DesktopPreferences>,
     pub boot_error: Mutex<Option<String>>,
+    /// setup 后的异步 bootstrap 是否完成。启动动作在此之前不会绕过 catalog 安全校验。
+    pub bootstrap_ready: AtomicBool,
     #[allow(dead_code)]
     pub quit_requested: AtomicBool,
 }
@@ -47,6 +49,32 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StartPlan {
+    packaged: bool,
+    requires_repo: bool,
+    builds_on_start: bool,
+    starts_watcher: bool,
+}
+
+fn start_plan(mode: &str) -> StartPlan {
+    if mode == "normal" {
+        StartPlan {
+            packaged: true,
+            requires_repo: false,
+            builds_on_start: false,
+            starts_watcher: false,
+        }
+    } else {
+        StartPlan {
+            packaged: false,
+            requires_repo: true,
+            builds_on_start: true,
+            starts_watcher: true,
+        }
+    }
 }
 
 // ── 环境检测文件缓存 ─────────────────────────────────────
@@ -118,6 +146,7 @@ impl AppState {
             snapshot: Mutex::new(AppSnapshot::mock_idle()),
             preferences: Mutex::new(prefs),
             boot_error: Mutex::new(None),
+            bootstrap_ready: AtomicBool::new(false),
             quit_requested: AtomicBool::new(false),
         }
     }
@@ -255,6 +284,19 @@ impl AppState {
             });
         }
         self.finalize(snap)
+    }
+
+    pub fn mark_bootstrap_ready(&self) {
+        self.bootstrap_ready.store(true, Ordering::SeqCst);
+    }
+
+    pub fn set_bootstrap_error(&self, app: &AppHandle, detail: String) {
+        *self.boot_error.lock().unwrap() = Some(detail);
+        self.bootstrap_ready.store(true, Ordering::SeqCst);
+        self.set_snapshot(app, |s| {
+            s.state = LauncherState::Failed;
+            s.phase = String::new();
+        });
     }
 
     /// 刷新仓库状态快照(动作前后调用)。
@@ -725,27 +767,23 @@ impl AppState {
         }
     }
 
-    /// 启动 dsh web(normal/dev),等待就绪/超时/早退;全程可取消。
-    fn launch_web(
+    fn set_operation_stage(&self, stage: &str) {
+        if let Some(op) = self.ops.current() {
+            self.ops.set_stage(op.operation_id, stage, None);
+        }
+    }
+
+    /// 统一处理源码/packaged Host 的进程登记、就绪检测和失败清理。
+    fn wait_for_web(
         self: &Arc<Self>,
         app: &AppHandle,
         mode: &str,
+        pid: u32,
+        port: u16,
+        ready_timeout: u64,
         token: &CancellationToken,
     ) -> Result<(), OperationError> {
         token.check()?;
-        let settings = config::load();
-        let tools = self.tools.lock().unwrap().clone();
-        let pid = self
-            .supervisor
-            .spawn_web(
-                &tools,
-                &settings.repo_path,
-                settings.port,
-                &settings.host,
-                &settings.dsh_home,
-                |_url| {},
-            )
-            .map_err(OperationError::Failed)?;
         self.set_snapshot(app, |s| {
             s.web_pid = Some(pid);
             s.started_at = Some(now_ms());
@@ -755,12 +793,13 @@ impl AppState {
                 LauncherMode::Normal
             };
         });
-        let ready_timeout = settings.ready_timeout_ms.max(10_000);
         let cancel_flag = token.flag();
-        match self
-            .supervisor
-            .wait_ready_cancellable(pid, settings.port, ready_timeout, cancel_flag)
-        {
+        match self.supervisor.wait_ready_cancellable(
+            pid,
+            port,
+            ready_timeout.max(10_000),
+            cancel_flag,
+        ) {
             Ok(url) => {
                 token.check()?;
                 self.set_snapshot(app, |s| {
@@ -799,7 +838,8 @@ impl AppState {
         }
     }
 
-    fn start_flow(
+    /// 启动源码 dsh web；仅由开发模式调用。
+    fn launch_source_web(
         self: &Arc<Self>,
         app: &AppHandle,
         mode: &str,
@@ -807,15 +847,94 @@ impl AppState {
     ) -> Result<(), OperationError> {
         token.check()?;
         let settings = config::load();
-        let usable = config::repo_usable(&settings.repo_path);
-        if !usable.ok {
+        let tools = self.tools.lock().unwrap().clone();
+        let pid = self
+            .supervisor
+            .spawn_web(
+                &tools,
+                &settings.repo_path,
+                settings.port,
+                &settings.host,
+                &settings.dsh_home,
+                |_url| {},
+            )
+            .map_err(OperationError::Failed)?;
+        self.wait_for_web(
+            app,
+            mode,
+            pid,
+            settings.port,
+            settings.ready_timeout_ms,
+            token,
+        )
+    }
+
+    /// 启动安装包内随附的 DSH Web Host；不读取 repo_path、不调用 build。
+    fn launch_packaged_web(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        packaged: &runtime::PackagedRuntime,
+        token: &CancellationToken,
+    ) -> Result<(), OperationError> {
+        token.check()?;
+        let settings = config::load();
+        let pid = self
+            .supervisor
+            .spawn_packaged_web(
+                &packaged.node_binary,
+                &packaged.cli_entry,
+                &packaged.harness_root,
+                settings.port,
+                &settings.host,
+                &packaged.dsh_home,
+                &packaged.tools,
+            )
+            .map_err(OperationError::Failed)?;
+        self.wait_for_web(
+            app,
+            "normal",
+            pid,
+            settings.port,
+            settings.ready_timeout_ms,
+            token,
+        )
+    }
+
+    fn start_flow(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        mode: &str,
+        token: &CancellationToken,
+    ) -> Result<(), OperationError> {
+        token.check()?;
+        if !self.bootstrap_ready.load(Ordering::SeqCst) {
+            self.fail(app, "启动器仍在准备运行环境", "请稍候片刻后重试启动");
+            return Err(OperationError::Failed("bootstrap-pending".into()));
+        }
+        if let Some(error) = self.boot_error.lock().unwrap().clone() {
             self.fail(
                 app,
-                &format!("仓库不可用:{}", settings.repo_path),
-                usable.reason.as_deref().unwrap_or("未知"),
+                "启动安全检查失败",
+                &format!(
+                    "{error}\n未启动任何 DSH 运行时。请重新安装正式包；开发模式可使用本地仓库。"
+                ),
             );
-            return Err(OperationError::Failed("repo-unusable".into()));
+            return Err(OperationError::Failed("bootstrap-failed".into()));
         }
+        if start_plan(mode).packaged {
+            return self.start_normal_flow(app, token);
+        }
+        self.start_dev_flow(app, token)
+    }
+
+    /// 普通启动:只使用安装包内 Harness + manifest 运行时，不触碰本地 repo/build/watcher。
+    fn start_normal_flow(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        token: &CancellationToken,
+    ) -> Result<(), OperationError> {
+        token.check()?;
+        let settings = config::load();
         // 已在运行 → 直接召回(不打开系统浏览器;成功后自动进入 DeepSeek 工作区)
         {
             let snap = self.snapshot.lock().unwrap();
@@ -828,7 +947,88 @@ impl AppState {
                 return Ok(());
             }
         }
-        if mode == "dev" && runtime::resolve_dsh_node().is_none() {
+        if config::probe_port(&settings.host, settings.port) {
+            self.fail(
+                app,
+                &format!("端口 {} 已被占用", settings.port),
+                &format!(
+                    "{}。请在「设置」中更换 dsh web 端口后重试,或先停止占用进程",
+                    self.port_diag(settings.port)
+                ),
+            );
+            return Err(OperationError::Failed("port-busy".into()));
+        }
+        self.set_snapshot(app, |s| {
+            s.error = None;
+            s.mode = LauncherMode::Normal;
+            s.state = LauncherState::Starting;
+            s.phase = "准备正式运行时…".into();
+        });
+        self.log_hub.append(
+            "launcher",
+            crate::contract::LogLevel::Info,
+            &format!(
+                "状态 → starting · 准备 packaged DSH(端口 {})",
+                settings.port
+            ),
+        );
+        self.set_operation_stage("准备正式运行时…");
+        let packaged = match runtime::ensure_packaged_runtime(app, &self.log_hub, token, &|stage| {
+            self.set_operation_stage(stage);
+            self.set_snapshot(app, |s| s.phase = stage.to_string());
+        }) {
+            Ok(runtime) => runtime,
+            Err(OperationError::Cancelled) => return Err(OperationError::Cancelled),
+            Err(OperationError::Failed(error)) => {
+                self.fail(
+                    app,
+                    "正式运行时不可用",
+                    &format!(
+                        "{error}\n安装包缺少运行资源或预配失败,请重新构建正式包；开发模式可以使用本地仓库。"
+                    ),
+                );
+                return Err(OperationError::Failed(error));
+            }
+        };
+        token.check()?;
+        self.set_snapshot(app, |s| {
+            s.state = LauncherState::Starting;
+            s.phase = "启动正式 DSH Web Host…".into();
+        });
+        self.set_operation_stage("启动正式 DSH Web Host…");
+        self.launch_packaged_web(app, &packaged, token)
+    }
+
+    /// 开发启动:保留本地 repo、源码构建、dev:web watcher 和源码入口。
+    fn start_dev_flow(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        token: &CancellationToken,
+    ) -> Result<(), OperationError> {
+        token.check()?;
+        let settings = config::load();
+        let usable = config::repo_usable(&settings.repo_path);
+        if !usable.ok {
+            self.fail(
+                app,
+                &format!("开发模式仓库不可用:{}", settings.repo_path),
+                usable.reason.as_deref().unwrap_or("未知"),
+            );
+            return Err(OperationError::Failed("repo-unusable".into()));
+        }
+        {
+            let snap = self.snapshot.lock().unwrap();
+            if snap.state == LauncherState::Running && snap.web_pid.is_some() {
+                self.log_hub.append(
+                    "launcher",
+                    crate::contract::LogLevel::Info,
+                    "dsh web 已在运行,将自动进入 DeepSeek 工作区",
+                );
+                return Ok(());
+            }
+        }
+        self.refresh_tools();
+        if runtime::resolve_dsh_node().is_none() {
             self.fail(
                 app,
                 &format!("开发模式需要 Node {}", runtime::NODE_RANGE_MSG),
@@ -850,24 +1050,23 @@ impl AppState {
         if self.tools.lock().unwrap().pnpm.is_none() {
             self.fail(
                 app,
-                "未找到 pnpm",
-                "请先安装 pnpm(brew install pnpm 或「安装托管工具链」),然后重试",
+                "开发模式未找到 pnpm",
+                "开发模式需要 pnpm run dev:web;请先安装 pnpm 或托管工具链",
             );
             return Err(OperationError::Failed("no-pnpm".into()));
         }
-        // 首次初始化:仓库缺构建产物(dists / 客户端 bundle)时先自动构建,
-        // 避免 dsh web 因缺 bundle 崩溃后空等就绪超时。构建过程实时推送到界面卡片。
         if config::repo_needs_build(&settings.repo_path) {
             self.log_hub.append(
                 "launcher",
                 crate::contract::LogLevel::Info,
-                "仓库缺少构建产物,启动前先自动构建(首次初始化较慢,请留意进度卡片)",
+                "开发仓库缺少构建产物,启动前执行源码构建",
             );
             self.set_snapshot(app, |s| {
                 s.error = None;
                 s.state = LauncherState::Building;
-                s.phase = "首次初始化构建中…".into();
+                s.phase = "开发模式源码构建中…".into();
             });
+            self.set_operation_stage("开发模式源码构建中…");
             let tools = self.tools.lock().unwrap().clone();
             let ok = crate::services::build::run_build(
                 &self.log_hub,
@@ -883,61 +1082,37 @@ impl AppState {
             if !ok {
                 self.fail(
                     app,
-                    "构建失败",
-                    "仓库初始化构建失败,服务未启动。查看日志尾部定位阶段,修复后重试「启动」",
+                    "开发模式构建失败",
+                    "源码构建失败,服务未启动;请查看日志尾部",
                 );
                 return Err(OperationError::Failed("build-failed".into()));
             }
             self.invalidate_env_cache();
-            self.log_hub.append(
-                "launcher",
-                crate::contract::LogLevel::Ok,
-                "初始化构建完成,继续启动 dsh web",
-            );
         }
         self.set_snapshot(app, |s| {
             s.error = None;
-            s.mode = if mode == "dev" {
-                LauncherMode::Dev
-            } else {
-                LauncherMode::Normal
-            };
+            s.mode = LauncherMode::Dev;
             s.state = LauncherState::Starting;
-            s.phase = if mode == "dev" {
-                "启动开发模式…".into()
-            } else {
-                "启动 dsh web…".into()
-            };
+            s.phase = "启动开发模式…".into();
         });
-        self.log_hub.append(
-            "launcher",
-            crate::contract::LogLevel::Info,
-            &format!(
-                "状态 → starting · 拉起 dsh web(源码启动,端口 {})",
-                settings.port
-            ),
-        );
-        if mode == "dev" {
-            let tools = self.tools.lock().unwrap().clone();
-            match self.supervisor.spawn_dev(&tools, &settings.repo_path) {
-                Ok(pid) => {
-                    self.set_snapshot(app, |s| s.dev_pid = Some(pid));
-                    self.log_hub.append(
-                        "launcher",
-                        crate::contract::LogLevel::Info,
-                        "开发模式:dsh web + pnpm run dev:web 同跑(HMR watcher 后台初始化)",
-                    );
-                }
-                Err(e) => {
-                    token.check()?;
-                    self.fail(app, "开发模式启动失败", &e);
-                    return Err(OperationError::Failed(e));
-                }
+        self.set_operation_stage("启动开发模式…");
+        let tools = self.tools.lock().unwrap().clone();
+        match self.supervisor.spawn_dev(&tools, &settings.repo_path) {
+            Ok(pid) => {
+                self.set_snapshot(app, |s| s.dev_pid = Some(pid));
+                self.log_hub.append(
+                    "launcher",
+                    crate::contract::LogLevel::Info,
+                    "开发模式:dsh web + pnpm run dev:web 同跑(HMR watcher 后台初始化)",
+                );
+            }
+            Err(e) => {
+                token.check()?;
+                self.fail(app, "开发模式启动失败", &e);
+                return Err(OperationError::Failed(e));
             }
         }
-        let r = self.launch_web(app, mode, token);
-        token.check()?;
-        r
+        self.launch_source_web(app, "dev", token)
     }
 
     fn update_flow(
@@ -1096,7 +1271,7 @@ impl AppState {
                 }
             ),
         );
-        let r = self.launch_web(
+        let r = self.launch_source_web(
             app,
             if mode == LauncherMode::Dev {
                 "dev"
@@ -1185,7 +1360,7 @@ impl AppState {
             s.state = LauncherState::Starting;
             s.phase = "启动 dsh web…".into();
         });
-        let r = self.launch_web(
+        let r = self.launch_source_web(
             app,
             if mode == LauncherMode::Dev {
                 "dev"
@@ -1407,16 +1582,18 @@ impl AppState {
     }
 
     /// 安装后刷新当前进程采用的托管工具(修复“安装完成但需重启才生效”问题)。
-    fn refresh_tools(&self) {
+    pub fn refresh_tools(&self) {
         let mut tools = self.tools.lock().unwrap();
         let node_dir =
             runtime::resolve_dsh_node().and_then(|(bin, _)| bin.parent().map(PathBuf::from));
         tools.dsh_node_dir = node_dir;
-        let git = crate::toolchain::resolve_git(&tools.clone());
+        let git = crate::toolchain::resolve_git(&tools.clone())
+            .or_else(|| runtime::resolve_executable("git"));
         if let Some(g) = git {
             tools.git = Some(g);
         }
-        let pnpm = crate::toolchain::resolve_pnpm(&tools.clone());
+        let pnpm = crate::toolchain::resolve_pnpm(&tools.clone())
+            .or_else(|| runtime::resolve_executable("pnpm"));
         if let Some(p) = pnpm {
             tools.pnpm = Some(p);
         }
@@ -1643,6 +1820,24 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normal_start_plan_is_packaged_and_has_no_repo_build_or_watcher_prerequisite() {
+        let plan = start_plan("normal");
+        assert!(plan.packaged);
+        assert!(!plan.requires_repo);
+        assert!(!plan.builds_on_start);
+        assert!(!plan.starts_watcher);
+    }
+
+    #[test]
+    fn dev_start_plan_keeps_repo_build_and_watcher_flow() {
+        let plan = start_plan("dev");
+        assert!(!plan.packaged);
+        assert!(plan.requires_repo);
+        assert!(plan.builds_on_start);
+        assert!(plan.starts_watcher);
+    }
 
     #[test]
     fn env_cache_roundtrip_and_invalidation() {
