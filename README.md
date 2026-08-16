@@ -59,6 +59,8 @@ pnpm install
 pnpm dev:desktop   # tauri dev:起 Rust 原生核心 + React 渲染器
 ```
 
+仓库内置 `.npmrc`，会将依赖下载切换到 `registry.npmmirror.com`，并对网络重置自动重试；全新 Windows 环境无需额外修改全局 npm 配置。
+
 需要本机具备 Rust 工具链(rustup)与 Node `^22.19 || >=24`。其他常用命令:`pnpm test:ui`(前端测试)、`pnpm typecheck`、`pnpm build:desktop`(打安装包)。
 在 macOS 上交叉编译 Windows 包:`rustup target add x86_64-pc-windows-gnu`(需 Homebrew `mingw-w64`)后
 `pnpm tauri build --target x86_64-pc-windows-gnu --bundles nsis`。

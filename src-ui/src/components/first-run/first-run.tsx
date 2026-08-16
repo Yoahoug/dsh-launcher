@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { useToast } from '@/components/ui/toast'
 import { api, useAppSnapshot } from '@/hooks/use-app'
+import { LogsPage } from '@/components/logs/logs-page'
 import { CloneDialog } from '@/components/repo/clone-dialog'
 import logoUrl from '@/assets/logo.svg'
 import type { EnvironmentSnapshot, OperationKind, OperationSnapshot } from '@/types/schema'
@@ -62,6 +63,7 @@ export function FirstRunPage({ onDone }: { onDone: () => void }) {
   const [checking, setChecking] = React.useState(false)
   const [saving, setSaving] = React.useState(false)
   const [cloneOpen, setCloneOpen] = React.useState(false)
+  const [showLogs, setShowLogs] = React.useState(false)
 
   const stepRef = React.useRef(step)
   stepRef.current = step
@@ -162,6 +164,23 @@ export function FirstRunPage({ onDone }: { onDone: () => void }) {
     } catch (err) {
       toast({ kind: 'error', title: '跳过失败', detail: String(err) })
     }
+  }
+
+  if (showLogs) {
+    return (
+      <div className="flex h-full flex-col bg-background">
+        <div className="flex shrink-0 items-center gap-3 border-b border-border bg-card/70 px-6 py-3">
+          <Button variant="ghost" size="sm" onClick={() => setShowLogs(false)}>
+            返回初始化
+          </Button>
+          <span className="text-sm font-semibold">运行日志</span>
+          <span className="text-xs text-muted-foreground">构建过程实时输出</span>
+        </div>
+        <div className="min-h-0 flex-1">
+          <LogsPage onBack={() => setShowLogs(false)} />
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -343,7 +362,9 @@ export function FirstRunPage({ onDone }: { onDone: () => void }) {
       {cloneOpen && (
         <CloneDialog
           onClose={() => setCloneOpen(false)}
-          onSubmitted={() => setCloneOpen(false)}
+          onSubmitted={(full) => {
+            if (full) setShowLogs(true)
+          }}
         />
       )}
     </div>

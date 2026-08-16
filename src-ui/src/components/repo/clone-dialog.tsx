@@ -43,7 +43,7 @@ export function CloneDialog({
   onSubmitted,
 }: {
   onClose: () => void
-  onSubmitted: () => void
+  onSubmitted: (full: boolean) => void
 }) {
   const [data, setData] = useState<CloneDialogData | null>(null)
   const [env, setEnv] = useState<EnvironmentSnapshot | null>(null)
@@ -101,7 +101,7 @@ export function CloneDialog({
         full,
       )
       if (res.ok) {
-        onSubmitted()
+        onSubmitted(full)
         onClose()
       } else {
         setError(res.reason ?? '请求被拒绝')

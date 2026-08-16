@@ -1,6 +1,6 @@
 [package]
 name = "dsh-launcher"
-version = "0.8.3"
+version = "0.8.4"
 description = "DSH Launcher — DeepSeek Harness 启动器桌面版"
 authors = ["Yoahoug"]
 edition = "2021"

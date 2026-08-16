@@ -539,7 +539,7 @@ fn install_package_flow(
         crate::contract::LogLevel::Info,
         &format!("安装插件包:{abs_dir} → profile '{profile}'"),
     );
-    let extra_env = tools.env();
+    let extra_env = crate::services::build::registry_env(tools);
     // 1. pnpm install(包目录)
     state.ops.set_stage(
         state.ops.current().map(|o| o.operation_id).unwrap_or(0),

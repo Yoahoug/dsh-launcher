@@ -52,6 +52,21 @@ describe('FirstRunPage 流程', () => {
     await user.click(await screen.findByRole('button', { name: '跳过(稍后设置)' }))
     expect(onDone).toHaveBeenCalledOnce()
   })
+
+  it('初始化一键构建后自动打开日志页,可返回继续向导', async () => {
+    const user = userEvent.setup()
+    render(
+      <ToastProvider>
+        <FirstRunPage onDone={vi.fn()} />
+      </ToastProvider>,
+    )
+    await user.click(screen.getByRole('button', { name: '开始配置' }))
+    await user.click(await screen.findByRole('button', { name: '克隆仓库并初始化' }))
+    await user.click(await screen.findByRole('button', { name: /克隆并初始化/ }))
+    expect(await screen.findByRole('log')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '返回初始化' }))
+    expect(await screen.findByText('已有仓库位置')).toBeInTheDocument()
+  })
 })
 
 describe('App 首次运行门控', () => {
@@ -96,6 +111,15 @@ describe('App 页面导航', () => {
     // 侧边栏「服务」返回主页
     await user.click(screen.getByRole('tab', { name: '服务' }))
     expect(await screen.findByText('DeepSeek Harness')).toBeInTheDocument()
+  })
+
+  it('更新并构建受理后自动进入日志页', async () => {
+    render(<App />)
+    const user = userEvent.setup()
+    await screen.findByText('DeepSeek Harness')
+    await user.click(screen.getByRole('tab', { name: '仓库与构建' }))
+    await user.click(await screen.findByRole('button', { name: '更新并构建' }))
+    expect(await screen.findByRole('log')).toBeInTheDocument()
   })
 
   it('设置页可进入并保存偏好', async () => {

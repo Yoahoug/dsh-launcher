@@ -16,7 +16,19 @@ import { SkillsPage } from '@/components/skills/skills-page'
 import { ToastProvider, useToast } from '@/components/ui/toast'
 import { api, useAppSnapshot, useDesktopSnapshot, useDshViewState, usePage } from '@/hooks/use-app'
 import { applyTheme } from '@/lib/theme'
-import type { ActionAccepted, LogLevel, PageName, UiActionName, Workspace } from '@/types/schema'
+import type { ActionAccepted, LogLevel, OperationKind, PageName, UiActionName, Workspace } from '@/types/schema'
+
+/** 这些流程可能执行 pnpm 构建,受理后统一展示实时日志。 */
+const AUTO_LOG_OPERATION_KINDS: ReadonlySet<OperationKind> = new Set([
+  'full_setup',
+  'install_deps',
+  'build',
+  'update_rebuild',
+  'rebuild_restart',
+  'start_web',
+  'start_dev',
+  'plugin_install',
+])
 
 /** 命令受理结果 → toast 反馈。长任务 accepted ≠ success；真实成功由状态终态体现。 */
 function useActionFeedback() {
@@ -58,6 +70,25 @@ function AppInner() {
   // 首次运行向导本会话内已处理(跳过/完成):即使 desktop 事件尚未刷新也立即退出向导,
   // 避免「跳过成功却再次看到向导」的闪烁;持久化由 Rust firstRunSkipped 保证。
   const [firstRunDismissed, setFirstRunDismissed] = React.useState(false)
+
+  const firstRunActive = !desktop?.firstRunDone && !firstRunDismissed
+
+  // 后端动作可能来自插件页、初始化向导或托盘,统一依据 operation 状态跳转日志页;
+  // 首次运行向导保留自己的日志视图,避免跳转后丢失初始化步骤。
+  React.useEffect(() => {
+    const operation = snap?.operation
+    if (
+      firstRunActive ||
+      !operation ||
+      !AUTO_LOG_OPERATION_KINDS.has(operation.kind) ||
+      (operation.status !== 'queued' && operation.status !== 'running') ||
+      (['start_web', 'start_dev'].includes(operation.kind) && snap?.state !== 'building')
+    ) {
+      return
+    }
+    setLogsLevel(undefined)
+    setPage('logs')
+  }, [firstRunActive, setPage, snap?.operation?.kind, snap?.operation?.operationId, snap?.operation?.status, snap?.state])
 
   // 主题:偏好驱动 + 系统变化监听
   React.useEffect(() => {
@@ -116,7 +147,12 @@ function AppInner() {
       if (a === 'stop' || a === 'rebuild') return api.confirmAndRun(a)
       return api.runAction(a)
     }
-    void run().then((res) => feedback(res, VERBS[a] ?? a))
+    void run().then((res) => {
+      feedback(res, VERBS[a] ?? a)
+      if (res.ok && ['update', 'rebuild'].includes(a) && !firstRunActive) {
+        openLogs()
+      }
+    })
   }
 
   if (!snap || !desktop) {
