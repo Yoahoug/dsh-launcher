@@ -60,10 +60,6 @@ jobs:
   # pre-compiled state instead of a cold compile.
   release-prebuild:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    paths:
-      - 'src-tauri/**'
-      - 'pnpm-lock.yaml'
-      - '.github/workflows/ci.yml'
     strategy:
       fail-fast: false
       matrix:
@@ -71,6 +67,16 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            rust:
+              - 'src-tauri/**'
+              - 'pnpm-lock.yaml'
+              - '.github/workflows/ci.yml'
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -84,7 +90,9 @@ jobs:
           add-job-id-key: false
 
       - name: pnpm install
+        if: steps.changes.outputs.rust == 'true'
         run: pnpm install --frozen-lockfile
 
       - name: Prebuild release artifacts (no bundle)
+        if: steps.changes.outputs.rust == 'true'
         run: pnpm tauri build --no-bundle
