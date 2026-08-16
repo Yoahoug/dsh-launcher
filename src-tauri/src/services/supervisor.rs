@@ -15,7 +15,7 @@ use std::time::Duration;
 /// 从仓库 package.json 的 `scripts.dsh` 解析 dsh 入口参数。
 /// 形如 `node --import tsx/esm apps/cli/src/bin.ts` → `["--import","tsx/esm","apps/cli/src/bin.ts"]`。
 /// 解析失败/未声明时返回 None(调用方回退 pnpm)。
-fn dsh_entry_args(repo_path: &str) -> Option<Vec<String>> {
+pub(crate) fn dsh_entry_args(repo_path: &str) -> Option<Vec<String>> {
     let raw = std::fs::read_to_string(Path::new(repo_path).join("package.json")).ok()?;
     let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
     let script = v.get("scripts")?.get("dsh")?.as_str()?;

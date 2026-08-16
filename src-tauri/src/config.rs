@@ -101,6 +101,22 @@ pub fn load() -> SettingsSnapshot {
             .get("firstRunSkipped")
             .and_then(|x| x.as_bool())
             .unwrap_or(defaults.first_run_skipped),
+        profile_name: field("profileName").unwrap_or(defaults.profile_name),
+        dsh_plugins_path: expand_path(
+            &field("dshPluginsPath").unwrap_or(defaults.dsh_plugins_path),
+        ),
+        external_skill_roots: v
+            .get("externalSkillRoots")
+            .and_then(|x| x.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|e| e.as_str().map(expand_path))
+                    .collect()
+            })
+            .unwrap_or(defaults.external_skill_roots),
+        skill_managed_root: expand_path(
+            &field("skillManagedRoot").unwrap_or(defaults.skill_managed_root),
+        ),
     }
 }
 
@@ -149,6 +165,31 @@ pub fn validate_patch(patch: &serde_json::Value) -> Result<SettingsSnapshot, Str
     }
     if let Some(b) = patch.get("firstRunSkipped").and_then(|x| x.as_bool()) {
         next.first_run_skipped = b;
+    }
+    if let Some(p) = patch.get("profileName").and_then(|x| x.as_str()) {
+        let p = p.trim().to_string();
+        // profile 名必须与 dsh profile 目录名一致:禁止路径分隔符与空串
+        if p.is_empty() {
+            return Err("profile 名称不能为空".into());
+        }
+        if p.contains('/') || p.contains('\\') || p == "." || p == ".." {
+            return Err("profile 名称不合法".into());
+        }
+        next.profile_name = p;
+    }
+    if let Some(p) = patch.get("dshPluginsPath").and_then(|x| x.as_str()) {
+        next.dsh_plugins_path = expand_path(p.trim());
+    }
+    if let Some(a) = patch.get("externalSkillRoots").and_then(|x| x.as_array()) {
+        let roots: Vec<String> = a
+            .iter()
+            .filter_map(|e| e.as_str().map(|s| expand_path(s.trim())))
+            .filter(|s| !s.is_empty())
+            .collect();
+        next.external_skill_roots = roots;
+    }
+    if let Some(m) = patch.get("skillManagedRoot").and_then(|x| x.as_str()) {
+        next.skill_managed_root = expand_path(m.trim());
     }
     // autostart 字段兼容读取(桌面版由 preferences 管理,不再通过本文件生效)
     Ok(next)

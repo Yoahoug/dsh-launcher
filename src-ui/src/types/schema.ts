@@ -86,6 +86,8 @@ export type OperationKind =
   | 'start_dev'
   | 'stop_all'
   | 'self_update'
+  | 'plugin_install'
+  | 'plugin_remove'
 
 /** 操作状态:只有 success 才是终态成功。 */
 export type OperationStatus =
@@ -228,6 +230,14 @@ export interface SettingsSnapshot {
   startTimeoutMs: number
   /** 首次运行是否已处理(跳过或完成);true 时不再展示首次运行向导。 */
   firstRunSkipped: boolean
+  /** M5:插件/技能子界面的目标 profile(默认 'web',对齐 dsh web 别名)。 */
+  profileName: string
+  /** M5:dsh-plugins 仓库根;空 = 自动探测 profile deps 里的 file: 链接。 */
+  dshPluginsPath: string
+  /** M5:技能扫描的自定义根目录(内置映射之外追加)。 */
+  externalSkillRoots: string[]
+  /** M5:managed 技能根;空 = $DSH_HOME/skills。 */
+  skillManagedRoot: string
 }
 
 /** 主题偏好。 */
@@ -334,8 +344,145 @@ export interface UpdateResult {
   update?: UpdateSnapshot
 }
 
-/** 页面名(托盘 app://open-page 事件取值;repo/env 为 UI 内部子界面)。 */
-export type PageName = 'dashboard' | 'repo' | 'env' | 'logs' | 'settings' | 'first-run'
+/** 页面名(托盘 app://open-page 事件取值;repo/env/plugins/skills 为 UI 内部子界面)。 */
+export type PageName =
+  | 'dashboard'
+  | 'repo'
+  | 'env'
+  | 'logs'
+  | 'plugins'
+  | 'skills'
+  | 'settings'
+  | 'first-run'
+
+// ── M5:插件管理子界面 ─────────────────────────────────────
+
+/** profile 摘要(插件页 profile 选择器)。 */
+export interface ProfileSummary {
+  name: string
+  /** 有序组合包列表(dsh.profile.bundles)。 */
+  bundles: string[]
+  /** dependencies:包名 → spec(file:/git:/版本)。 */
+  deps: Record<string, string>
+  /** profile 的 cordis.patch.yml 是否可读。 */
+  patchOk: boolean
+}
+
+/** 插件行来源层。 */
+export type PluginLayer = 'bundle' | 'profile-patch' | 'home-patch' | 'overlay'
+
+/** config 来源:'dump' = 可表单化;'raw-yaml' = 含 !!js 表达式,锁定原始 YAML。 */
+export type ConfigSource = 'dump' | 'raw-yaml'
+
+/** 组合后的一个 loader 行。 */
+export interface PluginRow {
+  id: string
+  /** name 字段(包导出名,如 @deepseek-ai/dsh-llm)。 */
+  module: string
+  layer: PluginLayer
+  /** 来源层展示文本(如 @deepseek-ai/dsh-base / patch 绝对路径)。 */
+  layerLabel: string
+  /** 该行是否已在用户 profile patch 中存在条目(重置按钮可用性)。 */
+  inUserPatch: boolean
+  /** 有无 disabled 生效。 */
+  enabled: boolean
+  /** 组合后的 config(dump-config 不求值 !!js;含 !!js 时为 null)。 */
+  config: Record<string, unknown> | null
+  configSource: ConfigSource
+  /** 原始 YAML 块(整行,从 `- id:` 到该行末尾;raw-yaml 编辑/预览用)。 */
+  rawBlock: string
+  /** bundle/home-patch 行可经覆盖编辑(整行重述);overlay 行不可编辑。 */
+  editable: boolean
+  /** 包说明(dsh-plugins 包匹配时来自其 package.json;否则 null)。 */
+  description: string | null
+}
+
+/** dsh-plugins 仓库里的包。 */
+export interface DshPluginPackage {
+  dir: string
+  absDir: string
+  name: string
+  version: string
+  description: string
+  /** 是否声明 dsh.bundle(bundle 安装后自动激活其 patch 层)。 */
+  isBundle: boolean
+  patchFile: string | null
+  /** 已安装到的 profile 列表。 */
+  installedIn: string[]
+}
+
+/** 补丁写入结果(备份 + dump-config 校验)。 */
+export interface PatchWriteResult {
+  /** 备份文件名(cordis.patch.yml.bak-<ts>);未发生写动作为 null。 */
+  backup: string | null
+  ok: boolean
+  summary: string
+  /** dump-config 校验是否通过(通过即运行中 dsh web 可 HMR 生效)。 */
+  validated: boolean
+  error: string | null
+}
+
+/** 插件组合视图快照。 */
+export interface PluginsSnapshot {
+  profiles: ProfileSummary[]
+  rows: PluginRow[]
+  packages: DshPluginPackage[]
+  /** 当前生效 profile;null = 不存在/未指定。 */
+  profile: string | null
+  /** dump-config 失败诊断(此时 rows 为空;UI 展示警示条)。 */
+  dumpError: string | null
+}
+
+// ── M5:技能管理子界面 ─────────────────────────────────────
+
+/** 技能来源分组。 */
+export type SkillSource =
+  | 'managed'
+  | 'codex'
+  | 'claude'
+  | 'cursor'
+  | 'opencode'
+  | 'agents'
+  | 'project'
+  | 'custom'
+
+/** 单个技能摘要。 */
+export interface SkillSummary {
+  name: string
+  description: string
+  whenToUse: string | null
+  modelInvocable: boolean
+  userInvocable: boolean
+  source: SkillSource
+  /** 技能所在目录(目录包)或根目录(扁平 md)。 */
+  dir: string
+  /** SKILL.md / <name>.md 的绝对路径。 */
+  path: string
+  sizeBytes: number
+  /** 目录包含 scripts/references 等附带资源。 */
+  hasScripts: boolean
+}
+
+/** 扫描根目录描述。 */
+export interface SkillRoot {
+  key: string
+  label: string
+  path: string
+  exists: boolean
+  managed: boolean
+  /** 该根是否已写进目标 profile 的 skill-filesystem.customSkillDirs(一键启用状态)。 */
+  enabled: boolean
+}
+
+/** 技能快照。 */
+export interface SkillsSnapshot {
+  roots: SkillRoot[]
+  skills: SkillSummary[]
+  /** 目标 profile 是否已安装 skill-external-roots 插件。 */
+  pluginsInstalled: boolean
+  /** 被跳过条目与原因(UI 展示"N 个被跳过")。 */
+  skipped: string[]
+}
 
 /** 事件 payload 名(与 Rust emit 的 event 名对齐)。 */
 export const EVENTS = {
@@ -346,4 +493,5 @@ export const EVENTS = {
   PERF_METRICS: 'app://perf-metrics',
   CHAT_STATE: 'app://chat-state',
   DSH_VIEW_STATE: 'app://dsh-view-state',
+  SKILLS_CHANGED: 'app://skills-changed',
 } as const

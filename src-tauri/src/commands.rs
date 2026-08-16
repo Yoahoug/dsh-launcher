@@ -3,7 +3,7 @@ use crate::contract::{
     ActionAccepted, AppSnapshot, DesktopPreferences, DesktopSnapshot, EnvironmentSnapshot, LogPage,
     SettingsSnapshot, UpdateResult,
 };
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::state::AppState;
 use std::sync::Arc;
@@ -313,4 +313,485 @@ pub fn set_workspace(
 pub fn get_dsh_view_state(app: AppHandle) -> crate::contract::DshViewSnapshot {
     app.state::<Arc<crate::dsh_view::DshViewManager>>()
         .current_state()
+}
+
+// ── M5:插件管理子界面 ─────────────────────────────────────
+
+/// 组装插件写操作上下文(设置 + 工具)。
+fn plugin_write_ctx(state: &Arc<AppState>) -> (crate::services::plugins::WriteCtx, String) {
+    let settings = crate::config::load();
+    let tools = state.tools.lock().unwrap().clone();
+    (
+        crate::services::plugins::WriteCtx {
+            tools,
+            repo_path: settings.repo_path.clone(),
+            dsh_home_setting: settings.dsh_home.clone(),
+        },
+        settings.profile_name,
+    )
+}
+
+/// dsh-plugins 路径:设置项 → 自动探测 profile deps 的 file: 链接 → 空。
+fn resolve_plugins_path(settings: &SettingsSnapshot) -> String {
+    if !settings.dsh_plugins_path.is_empty() {
+        return settings.dsh_plugins_path.clone();
+    }
+    let home = crate::services::plugins::dsh_home_dir(&settings.dsh_home);
+    let profiles = crate::services::plugins::profiles(&home);
+    crate::services::plugins::detect_plugins_path(&profiles).unwrap_or_default()
+}
+
+/// 插件组合视图快照(profiles + 行 + dsh-plugins 包)。
+#[tauri::command]
+pub fn plugins_get_snapshot(
+    profile: Option<String>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<crate::contract::PluginsSnapshot, String> {
+    let settings = crate::config::load();
+    let tools = state.tools.lock().unwrap().clone();
+    let profile_name = profile.unwrap_or(settings.profile_name.clone());
+    let dsh_plugins_path = resolve_plugins_path(&settings);
+    Ok(crate::services::plugins::snapshot(
+        &tools,
+        &settings.repo_path,
+        &settings.dsh_home,
+        &profile_name,
+        &dsh_plugins_path,
+    ))
+}
+
+fn nonempty_profile(requested: &str, default: &str) -> String {
+    if requested.is_empty() {
+        default.to_string()
+    } else {
+        requested.to_string()
+    }
+}
+
+/// 插件启停(写 profile patch + 备份 + dump-config 校验 + 回滚)。
+#[tauri::command]
+pub fn plugins_set_enabled(
+    profile: String,
+    id: String,
+    enabled: bool,
+    state: State<'_, Arc<AppState>>,
+) -> Result<crate::contract::PatchWriteResult, String> {
+    let (ctx, default_profile) = plugin_write_ctx(&state);
+    let profile = nonempty_profile(&profile, &default_profile);
+    crate::services::plugins::set_enabled(&state.log_hub, &ctx, &profile, &id, enabled)
+}
+
+/// 保存配置:config(整行全量键)或 raw_yaml(原始 YAML 块,含 !!js 行)。
+#[tauri::command]
+pub fn plugins_save_config(
+    profile: String,
+    id: String,
+    config: serde_json::Value,
+    raw_yaml: Option<String>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<crate::contract::PatchWriteResult, String> {
+    let (ctx, default_profile) = plugin_write_ctx(&state);
+    let profile = nonempty_profile(&profile, &default_profile);
+    crate::services::plugins::save_config(
+        &state.log_hub,
+        &ctx,
+        &profile,
+        &id,
+        &config,
+        raw_yaml.as_deref(),
+    )
+}
+
+/// 重置行(删除 profile patch 中该 id 条目,回落 bundle/home 默认)。
+#[tauri::command]
+pub fn plugins_reset_row(
+    profile: String,
+    id: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<crate::contract::PatchWriteResult, String> {
+    let (ctx, default_profile) = plugin_write_ctx(&state);
+    let profile = nonempty_profile(&profile, &default_profile);
+    crate::services::plugins::reset_row(&state.log_hub, &ctx, &profile, &id)
+}
+
+/// 仅校验补丁(不写文件)。
+#[tauri::command]
+pub fn plugins_validate_patch(
+    profile: String,
+    state: State<'_, Arc<AppState>>,
+) -> crate::contract::PatchWriteResult {
+    let (ctx, default_profile) = plugin_write_ctx(&state);
+    let profile = nonempty_profile(&profile, &default_profile);
+    crate::services::plugins::validate_patch(&ctx, &profile)
+}
+
+/// 原始 dump-config 文本(预览补丁效果/校验)。
+#[tauri::command]
+pub fn dshctl_dump_config(
+    profile: Option<String>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<String, String> {
+    let settings = crate::config::load();
+    let tools = state.tools.lock().unwrap().clone();
+    let profile = profile.unwrap_or(settings.profile_name);
+    crate::services::dshctl::run_capture(
+        &tools,
+        &settings.repo_path,
+        &settings.dsh_home,
+        &[
+            "--profile".to_string(),
+            profile,
+            "--dump-config".to_string(),
+        ],
+        crate::services::dshctl::CAPTURE_TIMEOUT,
+    )
+}
+
+/// 打开 dsh-plugins 包目录(系统文件管理器)。
+#[tauri::command]
+pub fn plugins_open_in_explorer(abs_dir: String) -> Result<(), String> {
+    tauri_plugin_opener::open_path(std::path::Path::new(&abs_dir), None::<&str>)
+        .map_err(|e| format!("打开目录失败:{e}"))
+}
+
+/// 长任务 worker 收尾(与 run_action 相同模式)。
+fn finish_plugin_op(
+    state: &Arc<AppState>,
+    app: &AppHandle,
+    id: u64,
+    result: Result<(), crate::ops::OperationError>,
+) {
+    match result {
+        Ok(()) => state.ops.finish(id, crate::contract::OperationStatus::Success, None),
+        Err(crate::ops::OperationError::Cancelled) => state
+            .ops
+            .finish(id, crate::contract::OperationStatus::Cancelled, Some("已取消".into())),
+        Err(crate::ops::OperationError::Failed(e)) => state
+            .ops
+            .finish(id, crate::contract::OperationStatus::Failed, Some(e)),
+    }
+    state.set_snapshot(app, |_| {});
+}
+
+/// 从 dsh-plugins 安装包:包目录 pnpm install + build → dsh plugin add file:<abs>。
+#[tauri::command]
+pub fn plugins_install_package(
+    app: AppHandle,
+    profile: String,
+    abs_dir: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<ActionAccepted, String> {
+    let state = state.inner().clone();
+    let settings = crate::config::load();
+    let tools = state.tools.lock().unwrap().clone();
+    let (id, token) = state
+        .ops
+        .begin(
+            crate::contract::OperationKind::PluginInstall,
+            true,
+            "准备安装插件…",
+        )
+        .map_err(|e| e)?;
+    state.set_snapshot(&app, |_| {});
+    let app2 = app.clone();
+    let state2 = state.clone();
+    std::thread::spawn(move || {
+        let result = install_package_flow(&state2, &profile, &abs_dir, &settings, &tools, &token);
+        finish_plugin_op(&state2, &app2, id, result);
+    });
+    Ok(ActionAccepted {
+        ok: true,
+        reason: None,
+        aborted: None,
+        already: None,
+    })
+}
+
+fn install_package_flow(
+    state: &Arc<AppState>,
+    profile: &str,
+    abs_dir: &str,
+    settings: &SettingsSnapshot,
+    tools: &crate::services::runtime::Tools,
+    token: &crate::ops::CancellationToken,
+) -> Result<(), crate::ops::OperationError> {
+    token.check()?;
+    let pkg = std::path::Path::new(abs_dir);
+    let pj = pkg.join("package.json");
+    if !pj.is_file() {
+        return Err(crate::ops::OperationError::Failed(format!(
+            "不是有效的插件包目录(缺少 package.json):{abs_dir}"
+        )));
+    }
+    state.log_hub.append(
+        "launcher",
+        crate::contract::LogLevel::Info,
+        &format!("安装插件包:{abs_dir} → profile '{profile}'"),
+    );
+    let extra_env = tools.env();
+    // 1. pnpm install(包目录)
+    state.ops.set_stage(
+        state.ops.current().map(|o| o.operation_id).unwrap_or(0),
+        "安装包依赖(pnpm install)…",
+        Some(20),
+    );
+    let (code, _tail) = crate::services::build::run_pnpm(
+        &state.log_hub,
+        tools,
+        abs_dir,
+        &["install"],
+        "插件包 pnpm install",
+        None,
+        &extra_env,
+        token,
+    )
+    .map_err(crate::ops::OperationError::Failed)?;
+    token.check()?;
+    if code != 0 {
+        return Err(crate::ops::OperationError::Failed("插件包依赖安装失败(pnpm install 退出码非 0)".into()));
+    }
+    // 2. pnpm run build(包声明了 build 脚本才执行;产物 lib/)
+    let has_build = std::fs::read_to_string(&pj)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|v| {
+            v.pointer("/scripts/build")
+                .and_then(|b| b.as_str())
+                .map(|s| s.to_string())
+        })
+        .is_some();
+    if has_build {
+        state.ops.set_stage(
+            state.ops.current().map(|o| o.operation_id).unwrap_or(0),
+            "构建插件包(pnpm run build)…",
+            Some(50),
+        );
+        let (code2, _tail2) = crate::services::build::run_pnpm(
+            &state.log_hub,
+            tools,
+            abs_dir,
+            &["run", "build"],
+            "插件包 pnpm run build",
+            None,
+            &extra_env,
+            token,
+        )
+        .map_err(crate::ops::OperationError::Failed)?;
+        token.check()?;
+        if code2 != 0 {
+            return Err(crate::ops::OperationError::Failed("插件包构建失败(pnpm run build 退出码非 0)".into()));
+        }
+    }
+    // 3. dsh plugin --profile <p> add file:<abs>
+    state.ops.set_stage(
+        state.ops.current().map(|o| o.operation_id).unwrap_or(0),
+        "dsh plugin add…",
+        Some(80),
+    );
+    crate::services::dshctl::run_stream(
+        &state.log_hub,
+        tools,
+        &settings.repo_path,
+        &settings.dsh_home,
+        &[
+            "plugin".to_string(),
+            "--profile".to_string(),
+            profile.to_string(),
+            "add".to_string(),
+            format!("file:{abs_dir}"),
+        ],
+        token,
+    )
+    .map_err(crate::ops::OperationError::Failed)
+}
+
+/// 移除插件包(dsh plugin --profile <p> remove <name>)。
+#[tauri::command]
+pub fn plugins_remove_package(
+    app: AppHandle,
+    profile: String,
+    name: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<ActionAccepted, String> {
+    let state = state.inner().clone();
+    let settings = crate::config::load();
+    let tools = state.tools.lock().unwrap().clone();
+    let (id, token) = state
+        .ops
+        .begin(
+            crate::contract::OperationKind::PluginRemove,
+            true,
+            "移除插件…",
+        )
+        .map_err(|e| e)?;
+    state.set_snapshot(&app, |_| {});
+    let app2 = app.clone();
+    let state2 = state.clone();
+    std::thread::spawn(move || {
+        let result = (|| -> Result<(), crate::ops::OperationError> {
+            token.check()?;
+            crate::services::dshctl::run_stream(
+                &state2.log_hub,
+                &tools,
+                &settings.repo_path,
+                &settings.dsh_home,
+                &[
+                    "plugin".to_string(),
+                    "--profile".to_string(),
+                    profile.clone(),
+                    "remove".to_string(),
+                    name.clone(),
+                ],
+                &token,
+            )
+            .map_err(crate::ops::OperationError::Failed)
+        })();
+        finish_plugin_op(&state2, &app2, id, result);
+    });
+    Ok(ActionAccepted {
+        ok: true,
+        reason: None,
+        aborted: None,
+        already: None,
+    })
+}
+
+// ── M5:技能管理子界面 ─────────────────────────────────────
+
+fn skill_ctx() -> (crate::services::skills::ScanCtx, String) {
+    let settings = crate::config::load();
+    (
+        crate::services::skills::ScanCtx {
+            repo_path: settings.repo_path.clone(),
+            dsh_home_setting: settings.dsh_home.clone(),
+            skill_managed_root_setting: settings.skill_managed_root.clone(),
+            external_skill_roots: settings.external_skill_roots.clone(),
+        },
+        settings.profile_name,
+    )
+}
+
+fn emit_skills_changed(app: &AppHandle) {
+    let _ = app.emit(crate::contract::EVENT_SKILLS_CHANGED, ());
+}
+
+/// 技能快照(全部根目录扫描 + 分组 + 一键启用状态)。
+#[tauri::command]
+pub fn skills_get_snapshot(state: State<'_, Arc<AppState>>) -> crate::contract::SkillsSnapshot {
+    let (ctx, profile) = skill_ctx();
+    crate::services::skills::snapshot(&ctx, &state.log_hub, &profile)
+}
+
+/// 新建技能(kebab + 唯一性校验;自动生成 frontmatter)。
+#[tauri::command]
+pub fn skills_create(
+    app: AppHandle,
+    name: String,
+    description: String,
+    when_to_use: Option<String>,
+    body: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<crate::contract::SkillSummary, String> {
+    let (ctx, _profile) = skill_ctx();
+    let r = crate::services::skills::create(
+        &state.log_hub,
+        &ctx,
+        &name,
+        &description,
+        when_to_use.as_deref(),
+        &body,
+    );
+    if r.is_ok() {
+        emit_skills_changed(&app);
+    }
+    r
+}
+
+/// 更新技能(仅 managed 根)。
+#[tauri::command]
+pub fn skills_update(
+    app: AppHandle,
+    name: String,
+    description: String,
+    when_to_use: Option<String>,
+    body: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<crate::contract::SkillSummary, String> {
+    let (ctx, _profile) = skill_ctx();
+    let r = crate::services::skills::update(
+        &state.log_hub,
+        &ctx,
+        &name,
+        &description,
+        when_to_use.as_deref(),
+        &body,
+    );
+    if r.is_ok() {
+        emit_skills_changed(&app);
+    }
+    r
+}
+
+/// 删除技能(路径围栏:仅 managed 根;外部路径一律拒绝)。
+#[tauri::command]
+pub fn skills_delete(
+    app: AppHandle,
+    name: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let (ctx, _profile) = skill_ctx();
+    let r = crate::services::skills::delete(&state.log_hub, &ctx, &name);
+    if r.is_ok() {
+        emit_skills_changed(&app);
+    }
+    r
+}
+
+/// 导入外部技能(递归拷贝 SKILL.md + scripts/references 等到 managed 根)。
+#[tauri::command]
+pub fn skills_import(
+    app: AppHandle,
+    source_path: String,
+    name: Option<String>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<crate::contract::SkillSummary, String> {
+    let (ctx, _profile) = skill_ctx();
+    let r = crate::services::skills::import(
+        &state.log_hub,
+        &ctx,
+        &source_path,
+        name.as_deref(),
+    );
+    if r.is_ok() {
+        emit_skills_changed(&app);
+    }
+    r
+}
+
+/// 预览技能正文(上限 256 KB)。
+#[tauri::command]
+pub fn skills_preview(source_path: String) -> Result<String, String> {
+    crate::services::skills::preview(&source_path)
+}
+
+/// 一键启用技能根:把外部根写进 profile patch 的 skill-filesystem.customSkillDirs。
+#[tauri::command]
+pub fn skills_enable_root(
+    app: AppHandle,
+    profile: String,
+    root_path: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<crate::contract::PatchWriteResult, String> {
+    let (ctx, default_profile) = plugin_write_ctx(&state);
+    let profile = nonempty_profile(&profile, &default_profile);
+    let r = crate::services::plugins::enable_skill_root(
+        &state.log_hub,
+        &ctx,
+        &profile,
+        &root_path,
+    );
+    if r.is_ok() {
+        emit_skills_changed(&app);
+    }
+    r
 }

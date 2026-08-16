@@ -43,6 +43,8 @@ const OP_LABEL: Record<OperationKind, string> = {
   start_dev: '启动开发模式',
   stop_all: '停止',
   self_update: '应用自更新',
+  plugin_install: '安装插件',
+  plugin_remove: '移除插件',
 }
 
 /**

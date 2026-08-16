@@ -89,6 +89,10 @@ pub enum OperationKind {
     StartDev,
     StopAll,
     SelfUpdate,
+    /// M5:从 dsh-plugins 安装插件包(pnpm install + build + dsh plugin add)。
+    PluginInstall,
+    /// M5:移除插件包(dsh plugin remove)。
+    PluginRemove,
 }
 
 impl OperationKind {
@@ -107,6 +111,8 @@ impl OperationKind {
                 | OperationKind::UpdateRebuild
                 | OperationKind::RebuildRestart
                 | OperationKind::SelfUpdate
+                | OperationKind::PluginInstall
+                | OperationKind::PluginRemove
         )
     }
 
@@ -127,6 +133,8 @@ impl OperationKind {
             OperationKind::StartDev => "启动开发模式",
             OperationKind::StopAll => "停止",
             OperationKind::SelfUpdate => "应用自更新",
+            OperationKind::PluginInstall => "安装插件",
+            OperationKind::PluginRemove => "移除插件",
         }
     }
 }
@@ -236,6 +244,14 @@ pub struct SettingsSnapshot {
     /// 首次运行是否已处理(跳过或完成)。为 true 时不再展示首次运行向导,
     /// 即使仓库当前不可用(用户可在启动器内随时克隆/配置)。
     pub first_run_skipped: bool,
+    /// M5:插件/技能子界面的目标 profile(默认 'web',对齐 dsh web 别名)。
+    pub profile_name: String,
+    /// M5:dsh-plugins 仓库根;空 = 自动探测 profile deps 里的 file: 链接。
+    pub dsh_plugins_path: String,
+    /// M5:技能扫描的自定义根目录(内置映射之外追加)。
+    pub external_skill_roots: Vec<String>,
+    /// M5:managed 技能根;空 = $DSH_HOME/skills。
+    pub skill_managed_root: String,
 }
 
 /// 主题偏好。
@@ -457,6 +473,180 @@ pub const EVENT_OPEN_PAGE: &str = "app://open-page";
 pub const EVENT_PREFERENCES_CHANGED: &str = "app://preferences-changed";
 /// DeepSeek 工作区/子 WebView 状态变更。
 pub const EVENT_DSH_VIEW_STATE: &str = "app://dsh-view-state";
+/// M5:技能写操作(新建/编辑/删除/导入/一键启用)后广播,前端刷新技能页。
+pub const EVENT_SKILLS_CHANGED: &str = "app://skills-changed";
+
+// ── M5:插件管理子界面(官方插件管理增强版) ────────────────
+
+/// profile 摘要(插件页 profile 选择器)。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileSummary {
+    pub name: String,
+    /// 有序组合包列表(dsh.profile.bundles)。
+    pub bundles: Vec<String>,
+    /// dependencies:包名 → spec(file:/git:/版本)。
+    pub deps: std::collections::BTreeMap<String, String>,
+    /// profile 的 cordis.patch.yml 是否可读。
+    pub patch_ok: bool,
+}
+
+/// 插件行来源层。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PluginLayer {
+    /// 组合包层(profile bundles 声明)。
+    Bundle,
+    /// profile 自己的 cordis.patch.yml。
+    ProfilePatch,
+    /// $DSH_HOME/cordis.patch.yml(home 级)。
+    HomePatch,
+    /// --patch <path> argv overlay(不持久,只读)。
+    Overlay,
+}
+
+/// config 来源:'dump' = 可表单化;'raw-yaml' = 含 !!js 表达式,锁定原始 YAML。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConfigSource {
+    Dump,
+    RawYaml,
+}
+
+/// 组合后的一个 loader 行(与方案 §4.2 对齐;rawBlock/inUserPatch 为实现补充)。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginRow {
+    pub id: String,
+    /// name 字段(包导出名,如 @deepseek-ai/dsh-llm)。
+    pub module: String,
+    pub layer: PluginLayer,
+    /// 来源层展示文本(如 @deepseek-ai/dsh-base / patch 绝对路径)。
+    pub layer_label: String,
+    /// 该行是否已在用户 profile patch 中存在条目(重置按钮可用性)。
+    pub in_user_patch: bool,
+    /// 有无 disabled 生效。
+    pub enabled: bool,
+    /// 组合后的 config(dump-config 不求值 !!js;含 !!js 时为 None)。
+    pub config: Option<serde_json::Value>,
+    pub config_source: ConfigSource,
+    /// 原始 YAML 块(整行,从 `- id:` 到该行末尾;raw-yaml 编辑/预览用)。
+    pub raw_block: String,
+    /// bundle/home-patch 行可经覆盖编辑(整行重述);overlay 行不可编辑。
+    pub editable: bool,
+    /// 包说明(dsh-plugins 包匹配时来自其 package.json;否则 None)。
+    pub description: Option<String>,
+}
+
+/// dsh-plugins 仓库里的包。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DshPluginPackage {
+    pub dir: String,
+    pub abs_dir: String,
+    pub name: String,
+    pub version: String,
+    pub description: String,
+    /// 是否声明 dsh.bundle(bundle 安装后自动激活其 patch 层)。
+    pub is_bundle: bool,
+    pub patch_file: Option<String>,
+    /// 已安装到的 profile 列表。
+    pub installed_in: Vec<String>,
+}
+
+/// 补丁写入结果(备份 + dump-config 校验)。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PatchWriteResult {
+    /// 备份文件名(cordis.patch.yml.bak-<ts>);未发生写动作为 None。
+    pub backup: Option<String>,
+    pub ok: bool,
+    pub summary: String,
+    /// dump-config 校验是否通过(通过即运行中 dsh web 可 HMR 生效)。
+    pub validated: bool,
+    pub error: Option<String>,
+}
+
+/// 插件组合视图快照。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginsSnapshot {
+    pub profiles: Vec<ProfileSummary>,
+    pub rows: Vec<PluginRow>,
+    pub packages: Vec<DshPluginPackage>,
+    /// 当前生效 profile;None = 不存在/未指定。
+    pub profile: Option<String>,
+    /// dump-config 失败诊断(此时 rows 为空;UI 展示警示条)。
+    pub dump_error: Option<String>,
+}
+
+// ── M5:技能管理子界面 ────────────────────────────────────
+
+/// 技能来源分组。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SkillSource {
+    /// $DSH_HOME/skills(本启动器直接管理)。
+    Managed,
+    /// ~/.codex/skills。
+    Codex,
+    /// ~/.claude/skills。
+    Claude,
+    /// ~/.cursor/skills、~/.cursor/skills-*(只探测存在的精确目录)。
+    Cursor,
+    /// ~/.config/opencode/skills。
+    Opencode,
+    /// ~/.agents/skills(dsh 原生已扫,这里只展示与导入)。
+    Agents,
+    /// <repo_path>/.dsh/skills、.agents/skills(只读展示)。
+    Project,
+    /// 设置 externalSkillRoots 追加的自定义根。
+    Custom,
+}
+
+/// 单个技能摘要。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillSummary {
+    pub name: String,
+    pub description: String,
+    pub when_to_use: Option<String>,
+    pub model_invocable: bool,
+    pub user_invocable: bool,
+    pub source: SkillSource,
+    /// 技能所在目录(目录包)或根目录(扁平 md)。
+    pub dir: String,
+    /// SKILL.md / <name>.md 的绝对路径。
+    pub path: String,
+    pub size_bytes: u64,
+    /// 目录包含 scripts/references 等附带资源。
+    pub has_scripts: bool,
+}
+
+/// 扫描根目录描述。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillRoot {
+    pub key: String,
+    pub label: String,
+    pub path: String,
+    pub exists: bool,
+    pub managed: bool,
+    /// 该根是否已写进目标 profile 的 skill-filesystem.customSkillDirs(一键启用状态)。
+    pub enabled: bool,
+}
+
+/// 技能快照。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillsSnapshot {
+    pub roots: Vec<SkillRoot>,
+    pub skills: Vec<SkillSummary>,
+    /// 目标 profile 是否已安装 skill-external-roots 插件。
+    pub plugins_installed: bool,
+    /// 被跳过条目与原因(UI 展示"N 个被跳过")。
+    pub skipped: Vec<String>,
+}
 
 impl AppSnapshot {
     /// M1 mock:空闲快照(M2 由 bridge 提供真实数据)。
@@ -519,6 +709,10 @@ impl Default for SettingsSnapshot {
             ready_timeout_ms: 180_000,
             start_timeout_ms: 180_000,
             first_run_skipped: false,
+            profile_name: "web".into(),
+            dsh_plugins_path: String::new(),
+            external_skill_roots: Vec::new(),
+            skill_managed_root: String::new(),
         }
     }
 }
@@ -577,9 +771,69 @@ mod tests {
         assert!(OperationKind::FullSetup.is_exclusive_write());
         assert!(OperationKind::UpdateRebuild.is_exclusive_write());
         assert!(OperationKind::SelfUpdate.is_exclusive_write());
+        assert!(OperationKind::PluginInstall.is_exclusive_write());
+        assert!(OperationKind::PluginRemove.is_exclusive_write());
         assert!(!OperationKind::StartWeb.is_exclusive_write());
         assert!(!OperationKind::StartDev.is_exclusive_write());
         assert!(!OperationKind::StopAll.is_exclusive_write());
+    }
+
+    #[test]
+    fn plugin_and_skill_types_serde_camel_and_kebab() {
+        // 插件行:layer/configSource 必须 kebab-case,其余 camelCase
+        let row = PluginRow {
+            id: "web".into(),
+            module: "@deepseek-ai/dsh-web".into(),
+            layer: PluginLayer::ProfilePatch,
+            layer_label: "/Users/u/.dsh/profiles/web/cordis.patch.yml".into(),
+            in_user_patch: true,
+            enabled: true,
+            config: Some(serde_json::json!({ "searchProvider": "tavily" })),
+            config_source: ConfigSource::Dump,
+            raw_block: "- id: web\n  config:\n    searchProvider: tavily\n".into(),
+            editable: true,
+            description: Some("x".into()),
+        };
+        let j = serde_json::to_string(&row).unwrap();
+        assert!(j.contains("\"layer\":\"profile-patch\""), "{j}");
+        assert!(j.contains("\"configSource\":\"dump\""), "{j}");
+        assert!(j.contains("\"inUserPatch\":true"), "{j}");
+        assert!(j.contains("\"rawBlock\""), "{j}");
+        let back: PluginRow = serde_json::from_str(&j).unwrap();
+        assert_eq!(back, row);
+
+        // 技能来源
+        assert_eq!(
+            serde_json::to_string(&SkillSource::Managed).unwrap(),
+            r#""managed""#
+        );
+        assert_eq!(
+            serde_json::to_string(&SkillSource::Codex).unwrap(),
+            r#""codex""#
+        );
+        let skill = SkillSummary {
+            name: "foo-bar".into(),
+            description: "d".into(),
+            when_to_use: None,
+            model_invocable: true,
+            user_invocable: true,
+            source: SkillSource::Codex,
+            dir: "/x/y".into(),
+            path: "/x/y/SKILL.md".into(),
+            size_bytes: 12,
+            has_scripts: true,
+        };
+        let js = serde_json::to_string(&skill).unwrap();
+        assert!(js.contains("\"whenToUse\":null"), "{js}");
+        assert!(js.contains("\"modelInvocable\":true"), "{js}");
+        assert!(js.contains("\"hasScripts\":true"), "{js}");
+        let back: SkillSummary = serde_json::from_str(&js).unwrap();
+        assert_eq!(back, skill);
+    }
+
+    #[test]
+    fn skills_changed_event_constant() {
+        assert_eq!(EVENT_SKILLS_CHANGED, "app://skills-changed");
     }
 
     #[test]

@@ -9,8 +9,10 @@ import { EnvPage } from '@/components/env/env-page'
 import { FirstRunPage } from '@/components/first-run/first-run'
 import { LogsPage } from '@/components/logs/logs-page'
 import { SideNav } from '@/components/nav/side-nav'
+import { PluginsPage } from '@/components/plugins/plugins-page'
 import { RepoPage } from '@/components/repo/repo-page'
 import { SettingsPage } from '@/components/settings/settings-page'
+import { SkillsPage } from '@/components/skills/skills-page'
 import { ToastProvider, useToast } from '@/components/ui/toast'
 import { api, useAppSnapshot, useDesktopSnapshot, useDshViewState, usePage } from '@/hooks/use-app'
 import { applyTheme } from '@/lib/theme'
@@ -39,10 +41,16 @@ function AppInner() {
   const dsh = useDshViewState()
   const feedback = useActionFeedback()
   const [mode, setMode] = React.useState<LaunchMode>('normal')
-  // ?page=repo|env|logs|settings|first-run 可直达页面(浏览器预览用)
+  // ?page=repo|env|logs|plugins|skills|settings|first-run 可直达页面(浏览器预览用)
   const urlPage = new URLSearchParams(window.location.search).get('page') as PageName | null
   const [page, setPage] = usePage(
-    urlPage === 'repo' || urlPage === 'env' || urlPage === 'logs' || urlPage === 'settings' || urlPage === 'first-run'
+    urlPage === 'repo' ||
+      urlPage === 'env' ||
+      urlPage === 'logs' ||
+      urlPage === 'plugins' ||
+      urlPage === 'skills' ||
+      urlPage === 'settings' ||
+      urlPage === 'first-run'
       ? urlPage
       : 'dashboard',
   )
@@ -202,6 +210,8 @@ function AppInner() {
                     />
                   )}
                   {page === 'logs' && <LogsPage initialLevel={logsLevel} onBack={goDashboard} />}
+                  {page === 'plugins' && <PluginsPage />}
+                  {page === 'skills' && <SkillsPage />}
                   {page === 'settings' && <SettingsPage onBack={goDashboard} />}
                   {page === 'first-run' && (
                     <FirstRunPage

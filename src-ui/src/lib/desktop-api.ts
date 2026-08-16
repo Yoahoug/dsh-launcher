@@ -20,8 +20,12 @@ import {
   type LogEntry,
   type LogPage,
   type PageName,
+  type PatchWriteResult,
   type PerfMark,
+  type PluginsSnapshot,
   type SettingsSnapshot,
+  type SkillSummary,
+  type SkillsSnapshot,
   type UpdateCheckResult,
   type Workspace,
 } from '@/types/schema'
@@ -82,6 +86,40 @@ export interface DesktopApi {
   onPerfMetrics(cb: (marks: PerfMark[]) => void): Promise<UnlistenFn>
   // M4.1:DeepSeek 工作区状态事件
   onDshViewState(cb: (snapshot: DshViewSnapshot) => void): Promise<UnlistenFn>
+  // M5:插件管理子界面
+  pluginsGetSnapshot(profile?: string): Promise<PluginsSnapshot>
+  pluginsSetEnabled(profile: string, id: string, enabled: boolean): Promise<PatchWriteResult>
+  pluginsSaveConfig(
+    profile: string,
+    id: string,
+    config: Record<string, unknown>,
+    rawYaml?: string | null,
+  ): Promise<PatchWriteResult>
+  pluginsResetRow(profile: string, id: string): Promise<PatchWriteResult>
+  pluginsValidatePatch(profile: string): Promise<PatchWriteResult>
+  dshctlDumpConfig(profile?: string): Promise<string>
+  pluginsOpenInExplorer(absDir: string): Promise<void>
+  pluginsInstallPackage(profile: string, absDir: string): Promise<ActionAccepted>
+  pluginsRemovePackage(profile: string, name: string): Promise<ActionAccepted>
+  // M5:技能管理子界面
+  skillsGetSnapshot(): Promise<SkillsSnapshot>
+  skillsCreate(
+    name: string,
+    description: string,
+    whenToUse?: string | null,
+    body?: string,
+  ): Promise<SkillSummary>
+  skillsUpdate(
+    name: string,
+    description: string,
+    whenToUse?: string | null,
+    body?: string,
+  ): Promise<SkillSummary>
+  skillsDelete(name: string): Promise<void>
+  skillsImport(sourcePath: string, name?: string | null): Promise<SkillSummary>
+  skillsPreview(sourcePath: string): Promise<string>
+  skillsEnableRoot(profile: string, rootPath: string): Promise<PatchWriteResult>
+  onSkillsChanged(cb: () => void): Promise<UnlistenFn>
 }
 
 /** Tauri 实现:command 名与 src-tauri/src/commands.rs 对齐。 */
@@ -127,4 +165,28 @@ export const desktopApi: DesktopApi = {
     listen<DesktopPreferences>(EVENTS.PREFERENCES_CHANGED, (e) => cb(e.payload)),
   onPerfMetrics: (cb) => listen<PerfMark[]>(EVENTS.PERF_METRICS, (e) => cb(e.payload)),
   onDshViewState: (cb) => listen<DshViewSnapshot>(EVENTS.DSH_VIEW_STATE, (e) => cb(e.payload)),
+  // M5:插件管理子界面
+  pluginsGetSnapshot: (profile) => invoke('plugins_get_snapshot', { profile }),
+  pluginsSetEnabled: (profile, id, enabled) =>
+    invoke('plugins_set_enabled', { profile, id, enabled }),
+  pluginsSaveConfig: (profile, id, config, rawYaml) =>
+    invoke('plugins_save_config', { profile, id, config, rawYaml }),
+  pluginsResetRow: (profile, id) => invoke('plugins_reset_row', { profile, id }),
+  pluginsValidatePatch: (profile) => invoke('plugins_validate_patch', { profile }),
+  dshctlDumpConfig: (profile) => invoke('dshctl_dump_config', { profile }),
+  pluginsOpenInExplorer: (absDir) => invoke('plugins_open_in_explorer', { absDir }),
+  pluginsInstallPackage: (profile, absDir) =>
+    invoke('plugins_install_package', { profile, absDir }),
+  pluginsRemovePackage: (profile, name) => invoke('plugins_remove_package', { profile, name }),
+  // M5:技能管理子界面
+  skillsGetSnapshot: () => invoke('skills_get_snapshot'),
+  skillsCreate: (name, description, whenToUse, body) =>
+    invoke('skills_create', { name, description, whenToUse, body }),
+  skillsUpdate: (name, description, whenToUse, body) =>
+    invoke('skills_update', { name, description, whenToUse, body }),
+  skillsDelete: (name) => invoke('skills_delete', { name }),
+  skillsImport: (sourcePath, name) => invoke('skills_import', { sourcePath, name }),
+  skillsPreview: (sourcePath) => invoke('skills_preview', { sourcePath }),
+  skillsEnableRoot: (profile, rootPath) => invoke('skills_enable_root', { profile, rootPath }),
+  onSkillsChanged: (cb) => listen(EVENTS.SKILLS_CHANGED, () => cb()),
 }

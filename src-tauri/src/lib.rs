@@ -95,6 +95,24 @@ pub fn run() {
             commands::retry_dsh_view,
             commands::set_workspace,
             commands::get_dsh_view_state,
+            // M5:插件管理子界面
+            commands::plugins_get_snapshot,
+            commands::plugins_set_enabled,
+            commands::plugins_save_config,
+            commands::plugins_reset_row,
+            commands::plugins_validate_patch,
+            commands::dshctl_dump_config,
+            commands::plugins_open_in_explorer,
+            commands::plugins_install_package,
+            commands::plugins_remove_package,
+            // M5:技能管理子界面
+            commands::skills_get_snapshot,
+            commands::skills_create,
+            commands::skills_update,
+            commands::skills_delete,
+            commands::skills_import,
+            commands::skills_preview,
+            commands::skills_enable_root,
         ])
         .setup(move |app| {
             let app_handle = app.handle().clone();

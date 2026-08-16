@@ -12,7 +12,11 @@ import type {
   LogEntry,
   LogPage,
   PageName,
+  PatchWriteResult,
+  PluginsSnapshot,
   SettingsSnapshot,
+  SkillSummary,
+  SkillsSnapshot,
   Workspace,
 } from '@/types/schema'
 import type { DesktopApi } from '@/lib/desktop-api'
@@ -192,6 +196,7 @@ export function __resetDshView() {
     canRetry: false,
     canReconnect: false,
   }
+  resetM5State()
 }
 
 /** 模拟启动流程(runAction start/dev/update/rebuild 共用)。 */
@@ -279,6 +284,10 @@ export const mockApi: DesktopApi = {
     openBrowser: true, autoUpdateCheck: true, buildArgs: '',
     readyTimeoutMs: 120_000, startTimeoutMs: 120_000,
     firstRunSkipped: false,
+    profileName: 'web',
+    dshPluginsPath: '/Users/yoahoug/Desktop/dsh-plugins',
+    externalSkillRoots: [],
+    skillManagedRoot: '',
   }),
   saveSettings: async (patch) => ({ ...(await mockApi.getSettings()), ...patch }),
   inspectEnvironment: async (_force?: boolean): Promise<EnvironmentSnapshot> => ({
@@ -435,6 +444,234 @@ export const mockApi: DesktopApi = {
     window.addEventListener('mock:dshview', h)
     return () => window.removeEventListener('mock:dshview', h)
   },
+  // ── M5:插件管理(mock 内存态) ───────────────────────────
+  pluginsGetSnapshot: async (): Promise<PluginsSnapshot> => ({
+    profiles: [
+      {
+        name: 'web',
+        bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'],
+        deps: {
+          '@dsh-plugins/web-search-tavily': 'file:/Users/you/Desktop/dsh-plugins/packages/web-search-tavily',
+          '@dsh-plugins/vision-bridge': 'file:/Users/you/Desktop/dsh-plugins/packages/vision-bridge',
+        },
+        patchOk: true,
+      },
+    ],
+    rows: mockPluginRows,
+    packages: [
+      {
+        dir: 'web-search-tavily',
+        absDir: '/Users/you/Desktop/dsh-plugins/packages/web-search-tavily',
+        name: '@dsh-plugins/web-search-tavily',
+        version: '0.1.0',
+        description: 'Tavily-backed search provider for the DeepSeek Harness web capability seam',
+        isBundle: false,
+        patchFile: null,
+        installedIn: ['web'],
+      },
+      {
+        dir: 'vision-bridge',
+        absDir: '/Users/you/Desktop/dsh-plugins/packages/vision-bridge',
+        name: '@dsh-plugins/vision-bridge',
+        version: '0.1.0',
+        description: 'Image understanding for the vision-less DeepSeek route',
+        isBundle: false,
+        patchFile: null,
+        installedIn: ['web'],
+      },
+    ],
+    profile: 'web',
+    dumpError: null,
+  }),
+  pluginsSetEnabled: async (_profile, id, enabled): Promise<PatchWriteResult> => {
+    const row = mockPluginRows.find((r) => r.id === id)
+    if (row) row.enabled = enabled
+    return {
+      backup: 'cordis.patch.yml.bak-1',
+      ok: true,
+      summary: `${id} 已${enabled ? '启用' : '停用'}(mock)`,
+      validated: true,
+      error: null,
+    }
+  },
+  pluginsSaveConfig: async (_profile, id, config, rawYaml): Promise<PatchWriteResult> => {
+    const row = mockPluginRows.find((r) => r.id === id)
+    if (row && rawYaml) {
+      row.rawBlock = rawYaml
+      row.configSource = rawYaml.includes('!!js') ? 'raw-yaml' : 'dump'
+    } else if (row) {
+      row.config = config
+      row.configSource = 'dump'
+    }
+    return {
+      backup: 'cordis.patch.yml.bak-1',
+      ok: true,
+      summary: `${id} 的 config 已固化整行(mock)`,
+      validated: true,
+      error: null,
+    }
+  },
+  pluginsResetRow: async (_profile, id): Promise<PatchWriteResult> => ({
+    backup: 'cordis.patch.yml.bak-1',
+    ok: true,
+    summary: `${id} 已重置(mock)`,
+    validated: true,
+    error: null,
+  }),
+  pluginsValidatePatch: async (): Promise<PatchWriteResult> => ({
+    backup: null,
+    ok: true,
+    summary: '校验通过(mock)',
+    validated: true,
+    error: null,
+  }),
+  dshctlDumpConfig: async () => '# == @deepseek-ai/dsh-base\n- id: web\n  config:\n    searchProvider: tavily\n',
+  pluginsOpenInExplorer: async () => {},
+  pluginsInstallPackage: async (_profile, absDir): Promise<ActionAccepted> => {
+    logEntry('dsh', 'info', `安装插件包:${absDir}(mock)`)
+    return { ok: true }
+  },
+  pluginsRemovePackage: async (_profile, name): Promise<ActionAccepted> => {
+    logEntry('dsh', 'info', `移除插件:${name}(mock)`)
+    return { ok: true }
+  },
+  // ── M5:技能管理(mock 内存态) ───────────────────────────
+  skillsGetSnapshot: async (): Promise<SkillsSnapshot> => ({
+    roots: [
+      { key: 'managed', label: '已管理 · $DSH_HOME/skills', path: '~/.dsh/skills', exists: true, managed: true, enabled: false },
+      { key: 'codex', label: 'Codex', path: '~/.codex/skills', exists: true, managed: false, enabled: true },
+      { key: 'claude', label: 'Claude Code', path: '~/.claude/skills', exists: true, managed: false, enabled: false },
+      { key: 'cursor', label: 'Cursor', path: '~/.cursor/skills-cursor', exists: true, managed: false, enabled: false },
+    ],
+    skills: mockSkills,
+    pluginsInstalled: true,
+    skipped: ['bad-name:目录名非 kebab-case,跳过'],
+  }),
+  skillsCreate: async (name, description, whenToUse, body): Promise<SkillSummary> => {
+    const s: SkillSummary = {
+      name, description, whenToUse: whenToUse ?? null,
+      modelInvocable: true, userInvocable: true, source: 'managed',
+      dir: `~/.dsh/skills/${name}`, path: `~/.dsh/skills/${name}/SKILL.md`,
+      sizeBytes: (body ?? '').length + 40, hasScripts: false,
+    }
+    mockSkills.push(s)
+    window.dispatchEvent(new CustomEvent('mock:skills'))
+    return s
+  },
+  skillsUpdate: async (name, description, whenToUse, body): Promise<SkillSummary> => {
+    const s = mockSkills.find((x) => x.name === name)
+    if (!s) throw new Error(`技能 ${name} 不存在(mock)`)
+    s.description = description
+    s.whenToUse = whenToUse ?? null
+    if (body !== undefined) s.sizeBytes = body.length + 40
+    window.dispatchEvent(new CustomEvent('mock:skills'))
+    return { ...s }
+  },
+  skillsDelete: async (name) => {
+    mockSkills = mockSkills.filter((s) => s.name !== name)
+    window.dispatchEvent(new CustomEvent('mock:skills'))
+  },
+  skillsImport: async (sourcePath, name): Promise<SkillSummary> => {
+    const s: SkillSummary = {
+      name: name ?? 'imported-skill', description: '来自 ' + sourcePath, whenToUse: null,
+      modelInvocable: true, userInvocable: true, source: 'managed',
+      dir: `~/.dsh/skills/${name ?? 'imported-skill'}`,
+      path: `~/.dsh/skills/${name ?? 'imported-skill'}/SKILL.md`,
+      sizeBytes: 512, hasScripts: true,
+    }
+    mockSkills.push(s)
+    window.dispatchEvent(new CustomEvent('mock:skills'))
+    return s
+  },
+  skillsPreview: async (sourcePath) => `# 预览(mock)\n\n来源:${sourcePath}`,
+  skillsEnableRoot: async (_profile, rootPath): Promise<PatchWriteResult> => ({
+    backup: 'cordis.patch.yml.bak-1',
+    ok: true,
+    summary: `${rootPath} 已写入 skill-filesystem.customSkillDirs(mock)`,
+    validated: true,
+    error: null,
+  }),
+  onSkillsChanged: async (cb) => {
+    const h = () => cb()
+    window.addEventListener('mock:skills', h)
+    return () => window.removeEventListener('mock:skills', h)
+  },
+}
+
+function defaultPluginRows() {
+  return [
+    {
+      id: 'web',
+      module: '@deepseek-ai/dsh-web',
+      layer: 'profile-patch' as const,
+      layerLabel: '~/.dsh/profiles/web/cordis.patch.yml',
+      inUserPatch: true,
+      enabled: true,
+      config: { searchProvider: 'tavily' },
+      configSource: 'dump' as const,
+      rawBlock: '- id: web\n  config:\n    searchProvider: tavily\n',
+      editable: true,
+      description: 'Web UI capability seam',
+    },
+    {
+      id: 'session-persistence-jsonl',
+      module: '@deepseek-ai/dsh-session-persistence-jsonl',
+      layer: 'bundle' as const,
+      layerLabel: '@deepseek-ai/dsh-base',
+      inUserPatch: false,
+      enabled: true,
+      config: null,
+      configSource: 'raw-yaml' as const,
+      rawBlock: "- id: session-persistence-jsonl\n  name: '@deepseek-ai/dsh-session-persistence-jsonl'\n  config:\n    root: !!js dshHomePath('sessions')\n",
+      editable: true,
+      description: null,
+    },
+    {
+      id: 'web-search-deepseek',
+      module: '@deepseek-ai/dsh-web-search-deepseek',
+      layer: 'bundle' as const,
+      layerLabel: '@deepseek-ai/dsh-base',
+      inUserPatch: true,
+      enabled: false,
+      config: { apiKeyEnv: 'DEEPSEEK_API_KEY' },
+      configSource: 'dump' as const,
+      rawBlock: '- id: web-search-deepseek\n  disabled: true\n',
+      editable: true,
+      description: null,
+    },
+  ] as import('@/types/schema').PluginRow[]
+}
+
+function defaultSkills() {
+  return [
+    {
+      name: 'tavily-extract', description: 'Extract clean markdown from URLs via the Tavily CLI.',
+      whenToUse: null, modelInvocable: true, userInvocable: true, source: 'claude',
+      dir: '~/.claude/skills/tavily-extract', path: '~/.claude/skills/tavily-extract/SKILL.md',
+      sizeBytes: 2048, hasScripts: false,
+    },
+    {
+      name: 'win-host', description: 'Windows 算力主机统一资源入口(训练/采集/重任务)。',
+      whenToUse: '需要 Win 主机算力时', modelInvocable: true, userInvocable: true, source: 'agents',
+      dir: '~/.agents/skills/win-host', path: '~/.agents/skills/win-host/SKILL.md',
+      sizeBytes: 4096, hasScripts: true,
+    },
+    {
+      name: 'my-skill', description: '我的示例技能(mock)。',
+      whenToUse: null, modelInvocable: true, userInvocable: true, source: 'managed',
+      dir: '~/.dsh/skills/my-skill', path: '~/.dsh/skills/my-skill/SKILL.md',
+      sizeBytes: 320, hasScripts: false,
+    },
+  ] as SkillSummary[]
+}
+
+let mockPluginRows: import('@/types/schema').PluginRow[] = defaultPluginRows()
+let mockSkills: SkillSummary[] = defaultSkills()
+
+/** vitest 每测后重置 M5 mock 内存态。 */
+export function resetM5State() {
+  mockPluginRows = defaultPluginRows()
+  mockSkills = defaultSkills()
 }
 
 export { EVENTS }

@@ -42,6 +42,9 @@ tar = "0.4"
 flate2 = "1"
 # M1:URL 校验(https / 受控 ssh;拒绝凭证)
 url = "2"
+# M5:插件/技能子界面 — YAML 解析与生成(纯 Rust,无原生链接,可 Windows 交叉编译)
+# serde_yaml_ng 是 serde_yaml 的维护分支;底层 unsafe-libyaml 为纯 Rust。
+serde_yaml_ng = "0.10"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Console", "Win32_Foundation", "Win32_System_ProcessStatus"] }

@@ -1,9 +1,9 @@
 import * as React from 'react'
 import { motion } from 'framer-motion'
-import { FolderOpen, Globe, Info, RefreshCw, Save, Server, Wrench } from 'lucide-react'
+import { FolderOpen, Globe, Info, Puzzle, RefreshCw, Save, Server, Wrench } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
+import { Input, Textarea } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { useToast } from '@/components/ui/toast'
@@ -23,13 +23,14 @@ const CLOSE_OPTIONS: { value: CloseBehavior; label: string }[] = [
   { value: 'quit', label: '退出应用(不停止 dsh)' },
 ]
 
-type SettingsTab = 'basic' | 'behavior' | 'appearance' | 'runtime' | 'update' | 'about'
+type SettingsTab = 'basic' | 'behavior' | 'appearance' | 'runtime' | 'm5' | 'update' | 'about'
 
 const TABS: { key: SettingsTab; label: string; icon: typeof Server }[] = [
   { key: 'basic', label: '基础', icon: Server },
   { key: 'behavior', label: '行为', icon: Wrench },
   { key: 'appearance', label: '外观', icon: Globe },
   { key: 'runtime', label: '运行时', icon: RefreshCw },
+  { key: 'm5', label: '插件与技能', icon: Puzzle },
   { key: 'update', label: '更新', icon: RefreshCw },
   { key: 'about', label: '关于', icon: Info },
 ]
@@ -322,6 +323,62 @@ export function SettingsPage({ onBack: _onBack }: { onBack: () => void }) {
                     安装托管 Node
                   </Button>
                 </div>
+              </Section>
+            )}
+
+            {tab === 'm5' && (
+              <Section icon={<Puzzle className="size-4 text-blue-500" />} title="插件与技能">
+                <Field label="目标 profile" hint="插件/技能子界面操作的 profile(默认 web,对齐 dsh web 别名)">
+                  <Input
+                    value={engine.profileName}
+                    onChange={(e) => setEngineField('profileName', e.target.value)}
+                    spellCheck={false}
+                    placeholder="web"
+                  />
+                </Field>
+                <Field label="dsh-plugins 路径" hint="仓库根;留空 = 自动探测 profile deps 里的 file: 链接">
+                  <div className="flex gap-1.5">
+                    <Input
+                      value={engine.dshPluginsPath}
+                      onChange={(e) => setEngineField('dshPluginsPath', e.target.value)}
+                      spellCheck={false}
+                      placeholder="自动探测"
+                    />
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      title="选择目录"
+                      onClick={() => void api.pickDirectory().then((p) => p && setEngineField('dshPluginsPath', p))}
+                    >
+                      <FolderOpen />
+                    </Button>
+                  </div>
+                </Field>
+                <Field label="managed 技能根" hint="技能子界面直接管理的根;留空 = $DSH_HOME/skills">
+                  <Input
+                    value={engine.skillManagedRoot}
+                    onChange={(e) => setEngineField('skillManagedRoot', e.target.value)}
+                    spellCheck={false}
+                    placeholder="$DSH_HOME/skills"
+                  />
+                </Field>
+                <Field
+                  label="外部技能根"
+                  hint="每行一个自定义扫描根(内置 codex/claude/cursor/opencode/agents 之外追加)"
+                >
+                  <Textarea
+                    value={engine.externalSkillRoots.join('\n')}
+                    onChange={(e) =>
+                      setEngineField(
+                        'externalSkillRoots',
+                        e.target.value.split('\n').map((s) => s.trim()).filter(Boolean),
+                      )
+                    }
+                    rows={4}
+                    spellCheck={false}
+                    placeholder={'~/my-agent/skills\n/absolute/path/to/skills'}
+                  />
+                </Field>
               </Section>
             )}
 
