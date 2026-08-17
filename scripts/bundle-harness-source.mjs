@@ -70,12 +70,21 @@ function copyPackage(sourceRoot, relativeRoot, outputRoot) {
   const source = join(sourceRoot, relativeRoot)
   const pkg = join(source, 'package.json')
   if (!existsSync(pkg)) return false
+  const manifest = readJson(pkg)
   const target = join(outputRoot, relativeRoot)
   mkdirSync(target, { recursive: true })
   writeFileSync(join(target, 'package.json'), productionPackageJson(pkg))
-  for (const name of ['lib', 'config', 'assets']) {
+  for (const name of ['lib', 'config', 'assets', 'bin', 'prebuilds', 'dist']) {
     const candidate = join(source, name)
-    if (existsSync(candidate)) copyTree(candidate, join(target, name), { excludeMaps: false })
+    if (existsSync(candidate)) copyTree(candidate, join(target, name), { excludeMaps: name === 'dist' })
+  }
+  const bins = typeof manifest.bin === 'string'
+    ? [manifest.bin]
+    : Object.values(manifest.bin ?? {})
+  for (const bin of bins) {
+    if (typeof bin !== 'string' || bin.startsWith('/') || bin.includes('..')) continue
+    const candidate = join(source, bin)
+    if (existsSync(candidate)) copyFile(candidate, join(target, bin))
   }
   return true
 }
@@ -89,11 +98,11 @@ function collectWorkspacePackages(sourceRoot, outputRoot) {
         if (entry.name === 'node_modules' || entry.name === 'tests' || entry.name === 'test') continue
         const child = join(dir, entry.name)
         const rel = join(relDir, entry.name)
-        if (entry.isDirectory() && existsSync(join(child, 'package.json'))) {
-          copyPackage(sourceRoot, rel, outputRoot)
-        } else if (entry.isDirectory()) {
-          walk(child, rel)
-        }
+        if (!entry.isDirectory()) continue
+        if (existsSync(join(child, 'package.json'))) copyPackage(sourceRoot, rel, outputRoot)
+        // A workspace member may itself contain nested workspace packages,
+        // such as native/landlock-run/packages/entry.
+        walk(child, rel)
       }
     }
     walk(groupRoot, group)
@@ -151,6 +160,12 @@ export function bundleHarness({ source, output }) {
   copyFile(join(sourceRoot, 'pnpm-lock.yaml'), join(outputRoot, 'pnpm-lock.yaml'))
   if (existsSync(join(sourceRoot, 'pnpm-workspace.yaml'))) {
     copyFile(join(sourceRoot, 'pnpm-workspace.yaml'), join(outputRoot, 'pnpm-workspace.yaml'))
+  }
+  // pnpm-workspace.yaml may reference patchedDependencies required by a
+  // production install (for example node-pty). Keep only the patch inputs,
+  // not the source repository's unrelated tooling files.
+  if (existsSync(join(sourceRoot, 'patches'))) {
+    copyTree(join(sourceRoot, 'patches'), join(outputRoot, 'patches'))
   }
   writeFileSync(join(outputRoot, 'package.json'), productionPackageJson(join(sourceRoot, 'package.json')))
   copyPackage(sourceRoot, 'apps/cli', outputRoot)

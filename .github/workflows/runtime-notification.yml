@@ -1,0 +1,24 @@
+name: Validate published DSH runtime notification
+
+on:
+  repository_dispatch:
+    types: [dsh-runtime-published]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Record runtime publication
+        env:
+          SOURCE_COMMIT: \${{ github.event.client_payload.source_commit }}
+          RUNTIME_TAG: \${{ github.event.client_payload.runtime_tag }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]]
+          [[ "$RUNTIME_TAG" =~ ^runtime-[0-9a-fA-F]{12}$ ]]
+          {
+            echo "### DSH runtime published"
+            echo "- upstream commit: $SOURCE_COMMIT"
+            echo "- runtime tag: $RUNTIME_TAG"
+            echo "- Launcher will fetch the signed runtime index at startup."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
+use url::Url;
 
 /// dsh engines 范围描述(提示文案)。
 pub const NODE_RANGE_MSG: &str = "^22.19 || >=24";
@@ -224,6 +225,36 @@ pub struct BundleManifest {
     pub files: Vec<BundleFile>,
 }
 
+/// fork 发布的可更新 DSH runtime 索引。索引只描述一个跨平台的 JS/Web bundle；
+/// Node 与生产依赖仍在用户机器上按平台预配，因此同一份归档可供 macOS/Windows/Linux 使用。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteRuntimeIndex {
+    pub schema: u32,
+    pub generated_at: String,
+    pub source_commit: String,
+    pub source_version: String,
+    pub bundle_hash: String,
+    pub artifact: RemoteRuntimeArtifact,
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RemoteRuntimeArtifact {
+    pub url: String,
+    pub size: u64,
+    pub sha256: String,
+}
+
+pub const REMOTE_RUNTIME_INDEX_URL: &str =
+    "https://raw.githubusercontent.com/Yoahoug/deepseek-harness/master/runtime-index.json";
+/// 由 fork 的 DSH_RUNTIME_SIGNING_PRIVATE_KEY 对应的公钥填充；私钥不进入任何仓库。
+pub const REMOTE_RUNTIME_PUBKEY_HEX: &str =
+    "1d2de47a590d4806885d33d1e081b7cc5feaf7dac751ed86dfb4723d5d30cd38";
+const REMOTE_RUNTIME_SCHEMA: u32 = 1;
+const REMOTE_RUNTIME_MAX_INDEX_BYTES: u64 = 128 * 1024;
+const REMOTE_RUNTIME_INDEX_TIMEOUT_MS: u64 = 15_000;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeManifest {
@@ -288,6 +319,82 @@ fn safe_bundle_path(path: &str) -> bool {
         && !p
             .components()
             .any(|component| matches!(component, std::path::Component::ParentDir))
+}
+
+fn runtime_index_url() -> String {
+    std::env::var("DSH_RUNTIME_INDEX_URL")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| REMOTE_RUNTIME_INDEX_URL.to_string())
+}
+
+fn runtime_index_payload(index: &RemoteRuntimeIndex) -> String {
+    format!(
+        "dsh-runtime-v1\n{}\n{}\n{}\n{}\n{}\n{}\n",
+        index.source_commit,
+        index.source_version,
+        index.bundle_hash,
+        index.artifact.url,
+        index.artifact.size,
+        index.artifact.sha256,
+    )
+}
+
+fn valid_hex(value: &str, bytes: usize) -> bool {
+    value.len() == bytes * 2 && value.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// 校验远程索引的结构、URL、artifact 摘要和 Ed25519 签名。
+/// 索引签名绑定下载地址与 SHA-256，避免仅凭远程 JSON 指向未授权归档。
+pub fn validate_remote_runtime_index(
+    raw: &[u8],
+    pubkey_hex: &str,
+) -> Result<RemoteRuntimeIndex, String> {
+    let index: RemoteRuntimeIndex =
+        serde_json::from_slice(raw).map_err(|e| format!("远程 DSH runtime 索引无法解析:{e}"))?;
+    if index.schema != REMOTE_RUNTIME_SCHEMA {
+        return Err(format!(
+            "远程 DSH runtime 索引 schema 不兼容:{}",
+            index.schema
+        ));
+    }
+    if !valid_hex(&index.source_commit, 20) {
+        return Err("远程 DSH runtime sourceCommit 非法".into());
+    }
+    if !valid_hex(&index.bundle_hash, 32) {
+        return Err("远程 DSH runtime bundleHash 非法".into());
+    }
+    if index.source_version.trim().is_empty() {
+        return Err("远程 DSH runtime sourceVersion 缺失".into());
+    }
+    if index.artifact.size == 0 || !valid_hex(&index.artifact.sha256, 32) {
+        return Err("远程 DSH runtime artifact 摘要或大小非法".into());
+    }
+    let url = Url::parse(&index.artifact.url)
+        .map_err(|e| format!("远程 DSH runtime artifact URL 非法:{e}"))?;
+    if url.scheme() != "https" || url.host_str() != Some("github.com") {
+        return Err("远程 DSH runtime artifact 必须来自 HTTPS GitHub Release".into());
+    }
+    if index.signature.len() != 128 {
+        return Err("远程 DSH runtime signature 长度非法".into());
+    }
+    let signature = ed25519_dalek::Signature::from_slice(
+        &hex::decode(&index.signature)
+            .map_err(|e| format!("远程 DSH runtime signature 非法:{e}"))?,
+    )
+    .map_err(|e| format!("远程 DSH runtime signature 非法:{e}"))?;
+    let key_bytes = hex::decode(pubkey_hex).map_err(|e| format!("runtime 公钥非法:{e}"))?;
+    let key: ed25519_dalek::VerifyingKey = key_bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| "runtime 公钥长度非法".to_string())
+        .and_then(|bytes: &[u8; 32]| {
+            ed25519_dalek::VerifyingKey::from_bytes(bytes)
+                .map_err(|e| format!("runtime 公钥非法:{e}"))
+        })?;
+    key.verify_strict(runtime_index_payload(&index).as_bytes(), &signature)
+        .map_err(|e| format!("远程 DSH runtime 索引验签失败(安全失败):{e}"))?;
+    Ok(index)
 }
 
 fn executable_file(path: &Path) -> bool {
@@ -463,7 +570,11 @@ fn install_production_dependencies(
 ) -> Result<(), OperationError> {
     token.check()?;
     let mut cmd = std::process::Command::new(pnpm);
-    cmd.args(["install", "--prod", "--frozen-lockfile"]);
+    // The bundle intentionally removes devDependencies from package manifests,
+    // so the source lockfile's dev specifiers no longer exactly match. Keep
+    // the lockfile as the production resolution input while allowing pnpm to
+    // reconcile those removed development-only specifiers.
+    cmd.args(["install", "--prod", "--no-frozen-lockfile"]);
     cmd.current_dir(harness_root);
     cmd.envs(tools.env());
     cmd.env("NODE_ENV", "production");
@@ -531,59 +642,153 @@ pub fn load_valid_runtime_manifest(
     }
 }
 
-/// setup 后用于选择 bootstrap 分支的轻量检查；有效时不触发 Node/pnpm/git 全量扫描。
-pub fn packaged_runtime_fast_path_available(app: &AppHandle) -> bool {
-    let Ok(resource_dir) = app.path().resource_dir() else {
-        return false;
-    };
-    let bundle_root = resource_dir.join(PACKAGED_HARNESS_RESOURCE);
-    let Ok(bundle) = load_bundle_manifest(&bundle_root) else {
-        return false;
-    };
-    matches!(load_valid_runtime_manifest(&bundle), Ok(Some(_)))
+fn packaged_runtime_from_manifest(manifest: RuntimeManifest) -> Result<PackagedRuntime, String> {
+    let harness_root = PathBuf::from(&manifest.harness_root);
+    let bundle = load_bundle_manifest(&harness_root)?;
+    let node_binary = PathBuf::from(&manifest.node_binary);
+    validate_runtime_manifest(&manifest, &bundle, probe_version(&node_binary).as_deref())?;
+    let cli_entry = PathBuf::from(&manifest.cli_entry);
+    let pnpm_binary = PathBuf::from(&manifest.pnpm_binary);
+    let dsh_home = PathBuf::from(&manifest.dsh_home);
+    Ok(PackagedRuntime {
+        manifest,
+        harness_root,
+        cli_entry,
+        node_binary: node_binary.clone(),
+        pnpm_binary: pnpm_binary.clone(),
+        dsh_home,
+        tools: Tools {
+            pnpm: Some(pnpm_binary),
+            git: None,
+            dsh_node_dir: node_binary.parent().map(Path::to_path_buf),
+        },
+    })
 }
 
-/// 预配正式 Harness。该函数只接受安装包资源，不读取 repo_path，也不执行本地 build。
-pub fn ensure_packaged_runtime(
-    app: &AppHandle,
+fn load_current_packaged_runtime() -> Result<Option<PackagedRuntime>, String> {
+    let Some(manifest) = runtime_manifest_from_file()? else {
+        return Ok(None);
+    };
+    match packaged_runtime_from_manifest(manifest) {
+        Ok(runtime) => Ok(Some(runtime)),
+        Err(_) => Ok(None),
+    }
+}
+
+fn fetch_remote_runtime_index(token: &CancellationToken) -> Result<RemoteRuntimeIndex, String> {
+    let raw = crate::download::download_bytes(
+        &runtime_index_url(),
+        token,
+        REMOTE_RUNTIME_INDEX_TIMEOUT_MS,
+        REMOTE_RUNTIME_MAX_INDEX_BYTES,
+    )
+    .map_err(|e| e.to_string())?;
+    validate_remote_runtime_index(&raw, REMOTE_RUNTIME_PUBKEY_HEX)
+}
+
+fn version_target(versions: &Path, bundle_hash: &str) -> PathBuf {
+    let preferred = versions.join(bundle_hash);
+    if !preferred.exists() {
+        preferred
+    } else {
+        versions.join(format!("{}-{}", bundle_hash, now_ms()))
+    }
+}
+
+fn materialize_bundle(source: &Path, bundle: &BundleManifest) -> Result<PathBuf, OperationError> {
+    let versions = harness_versions_dir();
+    std::fs::create_dir_all(&versions)
+        .map_err(|e| OperationError::Failed(format!("创建 Harness 版本目录失败:{e}")))?;
+    let preferred = versions.join(&bundle.bundle_hash);
+    if preferred.is_dir() && load_bundle_manifest(&preferred).is_ok() {
+        return Ok(preferred);
+    }
+    let staging = versions.join(format!(
+        ".provision-{}-{}",
+        bundle.bundle_hash,
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&staging);
+    copy_bundle_tree(source, &staging).map_err(OperationError::Failed)?;
+    let target = if preferred.exists() {
+        version_target(&versions, &bundle.bundle_hash)
+    } else {
+        preferred
+    };
+    std::fs::rename(&staging, &target)
+        .map_err(|e| OperationError::Failed(format!("发布 Harness 版本目录失败:{e}")))?;
+    Ok(target)
+}
+
+fn ensure_remote_bundle(
+    index: &RemoteRuntimeIndex,
+    token: &CancellationToken,
+    on_stage: &dyn Fn(&str),
+) -> Result<(PathBuf, BundleManifest), OperationError> {
+    let downloads = runtime_root().join("downloads");
+    std::fs::create_dir_all(&downloads)
+        .map_err(|e| OperationError::Failed(format!("创建 runtime 下载缓存失败:{e}")))?;
+    let archive = downloads.join(format!("{}.tar.gz", index.bundle_hash));
+    let cached = std::fs::metadata(&archive)
+        .is_ok_and(|m| m.is_file() && m.len() == index.artifact.size)
+        && crate::download::sha256_hex(&archive)
+            .is_ok_and(|hash| hash.eq_ignore_ascii_case(&index.artifact.sha256));
+    if !cached {
+        on_stage("下载最新 DSH runtime…");
+        let _ = std::fs::remove_file(&archive);
+        crate::download::download_and_verify(
+            &index.artifact.url,
+            &archive,
+            index.artifact.size,
+            &index.artifact.sha256,
+            token,
+            60_000,
+            &|_, _| {},
+        )?;
+    }
+
+    let versions = harness_versions_dir();
+    std::fs::create_dir_all(&versions)
+        .map_err(|e| OperationError::Failed(format!("创建 Harness 版本目录失败:{e}")))?;
+    let preferred = versions.join(&index.bundle_hash);
+    if preferred.is_dir() {
+        if let Ok(bundle) = load_bundle_manifest(&preferred) {
+            if bundle.bundle_hash == index.bundle_hash {
+                return Ok((preferred, bundle));
+            }
+        }
+    }
+    let staging = versions.join(format!(
+        ".download-{}-{}",
+        index.bundle_hash,
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&staging);
+    crate::archive::extract_tar_gz(&archive, &staging, token)?;
+    let bundle = load_bundle_manifest(&staging).map_err(OperationError::Failed)?;
+    if bundle.bundle_hash != index.bundle_hash {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(OperationError::Failed(
+            "远程 DSH runtime bundleHash 与索引不匹配".into(),
+        ));
+    }
+    let target = if preferred.exists() {
+        version_target(&versions, &index.bundle_hash)
+    } else {
+        preferred
+    };
+    std::fs::rename(&staging, &target)
+        .map_err(|e| OperationError::Failed(format!("发布远程 Harness 版本失败:{e}")))?;
+    Ok((target, bundle))
+}
+
+fn provision_bundle(
     log: &Arc<LogHub>,
     token: &CancellationToken,
     on_stage: &dyn Fn(&str),
+    harness_root: PathBuf,
+    bundle: &BundleManifest,
 ) -> Result<PackagedRuntime, OperationError> {
-    token.check()?;
-    let resource_dir = app
-        .path()
-        .resource_dir()
-        .map_err(|e| OperationError::Failed(format!("无法定位应用资源目录:{e}")))?;
-    let bundle_root = resource_dir.join(PACKAGED_HARNESS_RESOURCE);
-    let bundle = load_bundle_manifest(&bundle_root).map_err(OperationError::Failed)?;
-    if let Some(manifest) = load_valid_runtime_manifest(&bundle).map_err(OperationError::Failed)? {
-        let harness_root = PathBuf::from(&manifest.harness_root);
-        let cli_entry = PathBuf::from(&manifest.cli_entry);
-        let node_binary = PathBuf::from(&manifest.node_binary);
-        let pnpm_binary = PathBuf::from(&manifest.pnpm_binary);
-        let dsh_home = PathBuf::from(&manifest.dsh_home);
-        let tools = Tools {
-            pnpm: Some(pnpm_binary.clone()),
-            git: None,
-            dsh_node_dir: node_binary.parent().map(Path::to_path_buf),
-        };
-        log.append(
-            "launcher",
-            crate::contract::LogLevel::Info,
-            "正式运行时 manifest 有效,跳过预配",
-        );
-        return Ok(PackagedRuntime {
-            manifest,
-            harness_root,
-            cli_entry,
-            node_binary,
-            pnpm_binary,
-            dsh_home,
-            tools,
-        });
-    }
-
     on_stage("检查兼容 Node…");
     let mut tools = Tools::empty();
     if resolve_dsh_node().is_none() {
@@ -614,27 +819,11 @@ pub fn ensure_packaged_runtime(
             dsh_home.display()
         ))
     })?;
-    let versions = harness_versions_dir();
-    std::fs::create_dir_all(&versions)
-        .map_err(|e| OperationError::Failed(format!("创建 Harness 版本目录失败:{e}")))?;
-    let staging = versions.join(format!(
-        ".provision-{}-{}",
-        bundle.bundle_hash,
-        std::process::id()
-    ));
-    let harness_root = if versions.join(&bundle.bundle_hash).exists() {
-        versions.join(format!("{}-{}", bundle.bundle_hash, now_ms()))
-    } else {
-        versions.join(&bundle.bundle_hash)
-    };
-    let _ = std::fs::remove_dir_all(&staging);
-    copy_bundle_tree(&bundle_root, &staging).map_err(OperationError::Failed)?;
-    on_stage("安装生产依赖…");
-    install_production_dependencies(log, &pnpm_binary, &staging, &tools, token)?;
+    if !harness_root.join("node_modules").is_dir() {
+        on_stage("安装生产依赖…");
+        install_production_dependencies(log, &pnpm_binary, &harness_root, &tools, token)?;
+    }
     token.check()?;
-    std::fs::rename(&staging, &harness_root)
-        .map_err(|e| OperationError::Failed(format!("发布 Harness 版本目录失败:{e}")))?;
-
     let manifest = RuntimeManifest {
         schema: RUNTIME_SCHEMA,
         bundle_hash: bundle.bundle_hash.clone(),
@@ -649,7 +838,7 @@ pub fn ensure_packaged_runtime(
         dependencies_ready: true,
         created_at: now_ms().to_string(),
     };
-    validate_runtime_manifest(&manifest, &bundle, probe_version(&node_binary).as_deref())
+    validate_runtime_manifest(&manifest, bundle, probe_version(&node_binary).as_deref())
         .map_err(OperationError::Failed)?;
     atomic_write_runtime_manifest(&manifest).map_err(OperationError::Failed)?;
     let cli_entry = PathBuf::from(&manifest.cli_entry);
@@ -667,6 +856,88 @@ pub fn ensure_packaged_runtime(
         dsh_home,
         tools,
     })
+}
+
+/// setup 后用于选择 bootstrap 分支的轻量检查；有效时不触发 Node/pnpm/git 全量扫描。
+pub fn packaged_runtime_fast_path_available(app: &AppHandle) -> bool {
+    if matches!(load_current_packaged_runtime(), Ok(Some(_))) {
+        return true;
+    }
+    let Ok(resource_dir) = app.path().resource_dir() else {
+        return false;
+    };
+    let bundle_root = resource_dir.join(PACKAGED_HARNESS_RESOURCE);
+    let Ok(bundle) = load_bundle_manifest(&bundle_root) else {
+        return false;
+    };
+    matches!(load_valid_runtime_manifest(&bundle), Ok(Some(_)))
+}
+
+/// 预配正式 Harness。普通模式优先拉取 fork 的签名 runtime；本地已有有效版本时
+/// 即使网络不可用也继续启动。只有没有任何有效本地/安装包版本时才报错。
+pub fn ensure_packaged_runtime(
+    app: &AppHandle,
+    log: &Arc<LogHub>,
+    token: &CancellationToken,
+    on_stage: &dyn Fn(&str),
+) -> Result<PackagedRuntime, OperationError> {
+    token.check()?;
+    let current = load_current_packaged_runtime().ok().flatten();
+    on_stage("检查 DSH runtime 更新…");
+    let remote_error = match fetch_remote_runtime_index(token) {
+        Ok(index) => {
+            if current
+                .as_ref()
+                .is_some_and(|runtime| runtime.manifest.bundle_hash == index.bundle_hash)
+            {
+                log.append(
+                    "launcher",
+                    crate::contract::LogLevel::Info,
+                    "DSH runtime 已是最新,跳过下载",
+                );
+                return Ok(current.expect("上面已确认 current 存在"));
+            }
+            match ensure_remote_bundle(&index, token, on_stage)
+                .and_then(|(root, bundle)| provision_bundle(log, token, on_stage, root, &bundle))
+            {
+                Ok(runtime) => return Ok(runtime),
+                Err(error) => {
+                    log.append(
+                        "launcher",
+                        crate::contract::LogLevel::Warn,
+                        &format!("远程 DSH runtime 更新失败,尝试使用已有版本:{error}"),
+                    );
+                    Some(error.to_string())
+                }
+            }
+        }
+        Err(error) => {
+            log.append(
+                "launcher",
+                crate::contract::LogLevel::Warn,
+                "远程 DSH runtime 索引不可用,尝试使用已有版本或安装包资源",
+            );
+            Some(error)
+        }
+    };
+    if let Some(current) = current {
+        return Ok(current);
+    }
+
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .map_err(|e| OperationError::Failed(format!("无法定位应用资源目录:{e}")))?;
+    let bundle_root = resource_dir.join(PACKAGED_HARNESS_RESOURCE);
+    let bundle = load_bundle_manifest(&bundle_root).map_err(|error| {
+        OperationError::Failed(format!(
+            "{};安装包也没有可用 Harness manifest:{}",
+            remote_error.unwrap_or_else(|| "远程 runtime 尚未发布".into()),
+            error
+        ))
+    })?;
+    let harness_root = materialize_bundle(&bundle_root, &bundle)?;
+    provision_bundle(log, token, on_stage, harness_root, &bundle)
 }
 
 impl Tools {
@@ -828,6 +1099,22 @@ pub fn incompatible_node() -> Option<(PathBuf, String)> {
     }
 }
 
+fn append_compatible_node_dirs<I>(found: &mut Vec<(u8, PathBuf, String)>, dirs: I, priority: u8)
+where
+    I: IntoIterator<Item = PathBuf>,
+{
+    for dir in dirs {
+        let cand = dir.join(node_bin_name());
+        if cand.is_file() {
+            if let Some(v) = probe_version(&cand) {
+                if node_in_range(&v) {
+                    found.push((priority, cand, v));
+                }
+            }
+        }
+    }
+}
+
 /// 解析 dsh 兼容 Node(范围 ^22.19 || >=24):版本目录扫描 + Homebrew keg + PATH。
 /// 返回 (bin 绝对路径, 版本)。24 优先于 22(按版本排序取最高)。
 pub fn resolve_dsh_node() -> Option<(PathBuf, String)> {
@@ -881,6 +1168,11 @@ pub fn resolve_dsh_node() -> Option<(PathBuf, String)> {
             }
         }
     }
+
+    // Finder/LaunchAgent 启动时 PATH 通常没有 shell 初始化内容。普通 Homebrew
+    // Node 位于 /opt/homebrew/bin/node（而不是 node@22/node@24 keg），因此这里
+    // 也必须按已知目录逐个探测，不能只依赖 PATH。
+    append_compatible_node_dirs(&mut found, known_dirs(), 2);
 
     // PATH 中的 node(可能是 volta/fnm shim,现场探测)
     if let Ok(path) = std::env::var("PATH") {
@@ -1031,6 +1323,83 @@ mod tests {
             assert!(p.is_file(), "bin 必须存在: {}", p.display());
             assert!(node_in_range(&v), "版本必须在范围: {v}");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn known_node_dirs_are_version_probed_without_path() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("dsh-known-node-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let node = dir.join("node");
+        std::fs::write(&node, "#!/bin/sh\necho v24.9.0\n").unwrap();
+        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut found = Vec::new();
+        append_compatible_node_dirs(&mut found, [dir.clone()], 2);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].1, node);
+        assert_eq!(found[0].2, "v24.9.0");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn signed_remote_runtime_index_is_accepted_and_tampering_fails() {
+        use ed25519_dalek::{Signer, SigningKey};
+
+        let signing_key = SigningKey::from_bytes(&[7u8; 32]);
+        let verifying_key = signing_key.verifying_key();
+        let pubkey = hex::encode(verifying_key.to_bytes());
+        let mut index = RemoteRuntimeIndex {
+            schema: REMOTE_RUNTIME_SCHEMA,
+            generated_at: "2026-08-16T00:00:00Z".into(),
+            source_commit: "a".repeat(40),
+            source_version: "0.1.0".into(),
+            bundle_hash: "b".repeat(64),
+            artifact: RemoteRuntimeArtifact {
+                url: "https://github.com/Yoahoug/deepseek-harness/releases/download/runtime-a/dsh-runtime.tar.gz"
+                    .into(),
+                size: 123,
+                sha256: "c".repeat(64),
+            },
+            signature: String::new(),
+        };
+        index.signature = hex::encode(
+            signing_key
+                .sign(runtime_index_payload(&index).as_bytes())
+                .to_bytes(),
+        );
+        let raw = serde_json::to_vec(&index).unwrap();
+        assert_eq!(validate_remote_runtime_index(&raw, &pubkey).unwrap(), index);
+
+        let mut tampered = raw;
+        let tampered_at = tampered.len() - 20;
+        tampered[tampered_at] ^= 1;
+        assert!(validate_remote_runtime_index(&tampered, &pubkey).is_err());
+    }
+
+    #[test]
+    fn remote_runtime_index_rejects_non_github_artifact() {
+        let raw = serde_json::json!({
+            "schema": 1,
+            "generatedAt": "now",
+            "sourceCommit": "a".repeat(40),
+            "sourceVersion": "0.1.0",
+            "bundleHash": "b".repeat(64),
+            "artifact": {
+                "url": "https://example.com/dsh-runtime.tar.gz",
+                "size": 1,
+                "sha256": "c".repeat(64)
+            },
+            "signature": "0".repeat(128)
+        });
+        let error = validate_remote_runtime_index(
+            &serde_json::to_vec(&raw).unwrap(),
+            REMOTE_RUNTIME_PUBKEY_HEX,
+        )
+        .unwrap_err();
+        assert!(error.contains("GitHub"));
     }
 
     #[test]

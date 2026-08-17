@@ -83,6 +83,7 @@ fn start_plan(mode: &str) -> StartPlan {
 
 /// 缓存有效期:24h(成功即成功;跨天或显式失效才重新探测)。
 const ENV_CACHE_TTL_MS: i64 = 24 * 60 * 60 * 1000;
+const ENV_CACHE_SCHEMA: u32 = 2;
 
 fn env_cache_file() -> PathBuf {
     crate::config::state_dir().join("env-cache.json")
@@ -90,6 +91,7 @@ fn env_cache_file() -> PathBuf {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct EnvCacheFile {
+    schema: u32,
     cached_at_ms: i64,
     snapshot: EnvironmentSnapshot,
 }
@@ -97,6 +99,9 @@ struct EnvCacheFile {
 fn load_env_cache() -> Option<EnvironmentSnapshot> {
     let raw = std::fs::read_to_string(env_cache_file()).ok()?;
     let c: EnvCacheFile = serde_json::from_str(&raw).ok()?;
+    if c.schema != ENV_CACHE_SCHEMA {
+        return None;
+    }
     if now_ms() - c.cached_at_ms > ENV_CACHE_TTL_MS {
         return None;
     }
@@ -106,6 +111,7 @@ fn load_env_cache() -> Option<EnvironmentSnapshot> {
 fn save_env_cache(snap: &EnvironmentSnapshot) {
     let _ = std::fs::create_dir_all(crate::config::state_dir());
     let c = EnvCacheFile {
+        schema: ENV_CACHE_SCHEMA,
         cached_at_ms: now_ms(),
         snapshot: snap.clone(),
     };
@@ -1872,6 +1878,12 @@ mod tests {
         assert!(load_env_cache().is_none(), "无缓存时应为 None");
         save_env_cache(&snap);
         assert_eq!(load_env_cache(), Some(snap.clone()));
+        std::fs::write(
+            env_cache_file(),
+            serde_json::json!({"cached_at_ms": now_ms(), "snapshot": snap}).to_string(),
+        )
+        .unwrap();
+        assert!(load_env_cache().is_none(), "旧版本环境缓存必须自动失效");
         test_state().invalidate_env_cache();
         assert!(load_env_cache().is_none(), "失效后应清除");
         let _ = std::fs::remove_dir_all(&base);
