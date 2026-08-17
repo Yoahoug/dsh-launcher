@@ -620,7 +620,22 @@ fn install_production_dependencies(
 }
 
 fn managed_dsh_home() -> PathBuf {
-    state_dir().join("dsh-home")
+    crate::config::dsh_home_dir(&crate::config::load().dsh_home)
+}
+
+/// 把旧版本固定使用的 Launcher 私有 dsh-home 迁移为当前有效用户目录。
+/// 这里只更新运行时 manifest 的指针，不合并或删除任何用户数据；已有
+/// `~/.dsh`/自定义目录始终保留原样。
+fn normalize_runtime_dsh_home(manifest: &mut RuntimeManifest) -> Result<PathBuf, String> {
+    let dsh_home = managed_dsh_home();
+    std::fs::create_dir_all(&dsh_home)
+        .map_err(|e| format!("创建 DSH_HOME 失败:{} ({e})", dsh_home.display()))?;
+    let normalized = dsh_home.display().to_string();
+    if manifest.dsh_home != normalized {
+        manifest.dsh_home = normalized;
+        atomic_write_runtime_manifest(manifest)?;
+    }
+    Ok(dsh_home)
 }
 
 fn now_ms() -> i64 {
@@ -637,6 +652,10 @@ pub fn load_valid_runtime_manifest(
     let Some(manifest) = runtime_manifest_from_file()? else {
         return Ok(None);
     };
+    let mut manifest = manifest;
+    if normalize_runtime_dsh_home(&mut manifest).is_err() {
+        return Ok(None);
+    }
     let node_version = probe_version(Path::new(&manifest.node_binary));
     match validate_runtime_manifest(&manifest, bundle, node_version.as_deref()) {
         Ok(()) => Ok(Some(manifest)),
@@ -644,9 +663,12 @@ pub fn load_valid_runtime_manifest(
     }
 }
 
-fn packaged_runtime_from_manifest(manifest: RuntimeManifest) -> Result<PackagedRuntime, String> {
+fn packaged_runtime_from_manifest(
+    mut manifest: RuntimeManifest,
+) -> Result<PackagedRuntime, String> {
     let harness_root = PathBuf::from(&manifest.harness_root);
     let bundle = load_bundle_manifest(&harness_root)?;
+    normalize_runtime_dsh_home(&mut manifest)?;
     let node_binary = PathBuf::from(&manifest.node_binary);
     validate_runtime_manifest(&manifest, &bundle, probe_version(&node_binary).as_deref())?;
     let cli_entry = PathBuf::from(&manifest.cli_entry);
@@ -1412,6 +1434,35 @@ mod tests {
         std::env::set_var("DSH_LAUNCHER_STATE_DIR", &base);
         let (bundle, _, _) = manifest_fixture();
         assert!(load_valid_runtime_manifest(&bundle).unwrap().is_none());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn old_runtime_manifest_is_repointed_to_effective_user_dsh_home() {
+        let _g = crate::test_lock::ENV_LOCK.lock().unwrap();
+        let base =
+            std::env::temp_dir().join(format!("dsh-runtime-home-migration-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("config")).unwrap();
+        std::env::set_var("DSH_LAUNCHER_CONFIG_DIR", base.join("config"));
+        std::env::set_var("DSH_LAUNCHER_STATE_DIR", base.join("state"));
+        let effective = base.join("user-dsh");
+        std::fs::write(
+            base.join("config/dsh-launcher.json"),
+            serde_json::json!({"dshHome": effective}).to_string(),
+        )
+        .unwrap();
+        std::fs::create_dir_all(base.join("state/runtime")).unwrap();
+
+        let (bundle, mut manifest, fixture_base) = manifest_fixture();
+        assert_ne!(manifest.dsh_home, effective.display().to_string());
+        normalize_runtime_dsh_home(&mut manifest).unwrap();
+        assert_eq!(manifest.dsh_home, effective.display().to_string());
+        assert!(effective.is_dir());
+        assert!(runtime_manifest_path().is_file());
+        assert_eq!(bundle.bundle_hash.len(), 64);
+
+        let _ = std::fs::remove_dir_all(&fixture_base);
         let _ = std::fs::remove_dir_all(&base);
     }
 

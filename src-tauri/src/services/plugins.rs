@@ -25,11 +25,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// 解析 DSH_HOME(设置为空时默认 ~/.dsh)。
 pub fn dsh_home_dir(dsh_home_setting: &str) -> PathBuf {
-    if dsh_home_setting.is_empty() {
-        Path::new(&crate::config::home_dir()).join(".dsh")
-    } else {
-        PathBuf::from(dsh_home_setting)
-    }
+    crate::config::dsh_home_dir(dsh_home_setting)
 }
 
 pub fn profiles_dir(dsh_home: &Path) -> PathBuf {

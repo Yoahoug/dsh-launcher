@@ -996,6 +996,9 @@ impl AppState {
                 return Err(OperationError::Failed(error));
             }
         };
+        // 正式运行时可能刚刚下载/安装了托管 pnpm；后续插件、技能和配置
+        // 操作都从 AppState 取工具，必须立即共享这次预配得到的工具链。
+        self.apply_packaged_tools(&packaged.tools);
         token.check()?;
         self.set_snapshot(app, |s| {
             s.state = LauncherState::Starting;
@@ -1607,6 +1610,19 @@ impl AppState {
         self.invalidate_env_cache();
     }
 
+    /// 合并 packaged runtime 提供的工具，不覆盖已有的 Git 解析结果。
+    /// 这样普通模式首次预配后，插件/技能操作可以直接使用刚安装的 pnpm。
+    pub fn apply_packaged_tools(&self, packaged: &Tools) {
+        let mut tools = self.tools.lock().unwrap();
+        if packaged.pnpm.is_some() {
+            tools.pnpm = packaged.pnpm.clone();
+        }
+        if packaged.dsh_node_dir.is_some() {
+            tools.dsh_node_dir = packaged.dsh_node_dir.clone();
+        }
+        self.invalidate_env_cache();
+    }
+
     // ── 其它命令 ─────────────────────────────────────────
 
     /// 更新快照的 update 字段并广播。
@@ -1900,6 +1916,20 @@ mod tests {
         assert_eq!(updated.state, LauncherState::Starting);
         assert_eq!(updated.phase, "启动中");
         assert!(snapshot.try_lock().is_ok(), "快照更新后不应继续持锁");
+    }
+
+    #[test]
+    fn packaged_tools_are_available_to_follow_up_operations() {
+        let st = test_state();
+        st.apply_packaged_tools(&Tools {
+            pnpm: Some(PathBuf::from("/managed/pnpm")),
+            git: None,
+            dsh_node_dir: Some(PathBuf::from("/managed/node")),
+        });
+        let tools = st.tools.lock().unwrap().clone();
+        assert_eq!(tools.pnpm, Some(PathBuf::from("/managed/pnpm")));
+        assert_eq!(tools.dsh_node_dir, Some(PathBuf::from("/managed/node")));
+        assert!(tools.git.is_none(), "packaged 工具不应覆盖已有 Git 状态");
     }
 
     fn test_state() -> AppState {

@@ -106,6 +106,18 @@ pub fn expand_path(p: &str) -> String {
     }
 }
 
+/// 解析 DSH_HOME。空设置沿用 DSH 的跨平台默认目录(`~/.dsh`)，
+/// 非空设置支持 `~` / `$HOME` 展开，保证 Launcher UI、插件服务和 Host
+/// 使用同一份用户数据。
+pub fn dsh_home_dir(setting: &str) -> PathBuf {
+    let setting = setting.trim();
+    if setting.is_empty() {
+        Path::new(&home_dir()).join(".dsh")
+    } else {
+        PathBuf::from(expand_path(setting))
+    }
+}
+
 /// 读设置:磁盘 JSON + 默认值合并(缺失字段用默认)。
 pub fn load() -> SettingsSnapshot {
     let defaults = SettingsSnapshot::default();
@@ -127,7 +139,7 @@ pub fn load() -> SettingsSnapshot {
             .filter(|n| *n >= 1)
             .unwrap_or(defaults.port),
         host: field("host").unwrap_or(defaults.host),
-        dsh_home: field("dshHome").unwrap_or(defaults.dsh_home),
+        dsh_home: expand_path(&field("dshHome").unwrap_or(defaults.dsh_home)),
         autostart: v
             .get("autostart")
             .and_then(|x| x.as_bool())
@@ -196,7 +208,7 @@ pub fn validate_patch(patch: &serde_json::Value) -> Result<SettingsSnapshot, Str
         next.host = h.trim().to_string();
     }
     if let Some(d) = patch.get("dshHome").and_then(|x| x.as_str()) {
-        next.dsh_home = d.trim().to_string();
+        next.dsh_home = expand_path(d.trim());
     }
     if let Some(b) = patch.get("buildArgs").and_then(|x| x.as_str()) {
         next.build_args = b.trim().to_string();
@@ -379,6 +391,23 @@ mod tests {
         assert_eq!(s.port, 3081);
         assert_eq!(s.ready_timeout_ms, 60_000);
         assert_eq!(s.host, "127.0.0.1", "缺失字段用默认");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dsh_home_uses_default_and_expands_custom_path() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let dir = temp_dir("dsh-home");
+        let home = home_dir();
+        assert_eq!(dsh_home_dir(""), PathBuf::from(&home).join(".dsh"));
+        assert_eq!(
+            dsh_home_dir("~/custom-dsh"),
+            PathBuf::from(&home).join("custom-dsh")
+        );
+        assert_eq!(
+            dsh_home_dir("$HOME/custom-dsh"),
+            PathBuf::from(&home).join("custom-dsh")
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
