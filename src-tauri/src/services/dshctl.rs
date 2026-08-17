@@ -1,7 +1,7 @@
 // dsh-launcher · DshCtl:dsh CLI 子进程封装
 // 插件 add/remove、--dump-config 等一律经本模块执行:
-// - 复用 supervisor 的 node 直连解析(仓库 package.json scripts.dsh)与 runtime::Tools
-//   的 PATH 注入;cwd = repo_path;DSH_HOME / DSH_NO_AUTOOPEN 注入;
+// - 开发模式复用仓库 package.json scripts.dsh;普通模式复用 packaged CLI;
+//   两者都使用 runtime::Tools 的 PATH 注入并注入 DSH_HOME / DSH_NO_AUTOOPEN;
 // - 流式模式:stdout/stderr 逐行进 log_hub(来源 "dsh"),可取消(ops::CancellationToken);
 // - 捕获模式:一次性取回 stdout(如 --dump-config),带超时。
 use crate::log_hub::LogHub;
@@ -47,12 +47,22 @@ pub fn build_dsh_cmd(
 ) -> Result<(String, Command), String> {
     let mut cmd;
     let label_desc;
-    if let Some(entry_args) = dsh_entry_args(repo_path) {
+    let current_dir;
+    if let (Some(cli_entry), Some(harness_root)) = (&tools.dsh_cli_entry, &tools.dsh_harness_root) {
+        let node = resolve_node(tools)?;
+        let mut c = Command::new(&node);
+        c.arg(cli_entry);
+        c.args(args);
+        label_desc = format!("packaged dsh {}", args.join(" "));
+        current_dir = harness_root.clone();
+        cmd = c;
+    } else if let Some(entry_args) = dsh_entry_args(repo_path) {
         let node = resolve_node(tools)?;
         let mut c = Command::new(&node);
         c.args(&entry_args);
         c.args(args);
         label_desc = format!("dsh {}", args.join(" "));
+        current_dir = std::path::PathBuf::from(repo_path);
         cmd = c;
     } else {
         let pnpm = tools
@@ -64,12 +74,18 @@ pub fn build_dsh_cmd(
         c.arg("dsh");
         c.args(args);
         label_desc = format!("pnpm dsh {}", args.join(" "));
+        current_dir = std::path::PathBuf::from(repo_path);
         cmd = c;
     }
-    cmd.current_dir(repo_path);
+    cmd.current_dir(current_dir);
     cmd.envs(tools.env());
-    if !dsh_home.is_empty() {
+    if !dsh_home.trim().is_empty() {
         cmd.env("DSH_HOME", dsh_home);
+    } else if tools.dsh_cli_entry.is_some() {
+        cmd.env(
+            "DSH_HOME",
+            crate::config::dsh_home_dir("").display().to_string(),
+        );
     }
     cmd.env("DSH_NO_AUTOOPEN", "1");
     Ok((label_desc, cmd))
@@ -283,6 +299,8 @@ mod tests {
             pnpm: None,
             git: None,
             dsh_node_dir: std::env::var("HOME").ok().map(std::path::PathBuf::from),
+            dsh_cli_entry: None,
+            dsh_harness_root: None,
         };
         let args = vec![
             "--profile".to_string(),
@@ -291,6 +309,48 @@ mod tests {
         ];
         let (label, _cmd) = build_dsh_cmd(&tools, &base.display().to_string(), "", &args).unwrap();
         assert!(label.contains("dsh --profile web --dump-config"), "{label}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn build_cmd_uses_packaged_cli_without_repo_path() {
+        let base = std::env::temp_dir().join(format!("dsh-packaged-dshctl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let harness = base.join("harness");
+        let cli = harness.join("apps/cli/lib/bin.js");
+        let node_dir = base.join("node");
+        std::fs::create_dir_all(cli.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(&node_dir).unwrap();
+        std::fs::write(&cli, b"fixture").unwrap();
+        std::fs::write(
+            node_dir.join(if cfg!(windows) { "node.exe" } else { "node" }),
+            b"fixture",
+        )
+        .unwrap();
+        let tools = Tools {
+            pnpm: None,
+            git: None,
+            dsh_node_dir: Some(node_dir),
+            dsh_cli_entry: Some(cli.clone()),
+            dsh_harness_root: Some(harness.clone()),
+        };
+        let args = vec![
+            "plugin".to_string(),
+            "--profile".to_string(),
+            "web".to_string(),
+            "add".to_string(),
+            "file:C:\\Users\\test\\plugin".to_string(),
+        ];
+        let (label, command) =
+            build_dsh_cmd(&tools, "C:\\path\\that\\does\\not\\exist", "", &args).unwrap();
+        let command_args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        assert!(label.starts_with("packaged dsh plugin"), "{label}");
+        assert_eq!(command_args[0], cli.display().to_string());
+        assert!(command_args.iter().any(|arg| arg.contains("file:C:")));
+        assert_eq!(command.get_current_dir(), Some(harness.as_path()));
         let _ = std::fs::remove_dir_all(&base);
     }
 

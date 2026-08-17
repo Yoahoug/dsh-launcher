@@ -34,6 +34,8 @@ fn tools() -> Option<Tools> {
         pnpm: runtime::resolve_executable("pnpm").or_else(crate_resolve_pnpm),
         git: runtime::resolve_executable("git"),
         dsh_node_dir: node.0.parent().map(std::path::PathBuf::from),
+        dsh_cli_entry: None,
+        dsh_harness_root: None,
     })
 }
 
@@ -42,6 +44,8 @@ fn crate_resolve_pnpm() -> Option<std::path::PathBuf> {
         pnpm: None,
         git: None,
         dsh_node_dir: None,
+        dsh_cli_entry: None,
+        dsh_harness_root: None,
     })
 }
 

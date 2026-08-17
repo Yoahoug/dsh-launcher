@@ -60,6 +60,8 @@ fn make_tools() -> (Tools, std::path::PathBuf) {
         pnpm: Some(dir.join("pnpm")),
         git: None,
         dsh_node_dir: None,
+        dsh_cli_entry: None,
+        dsh_harness_root: None,
     };
     (tools, dir)
 }

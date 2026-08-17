@@ -199,6 +199,10 @@ pub struct Tools {
     pub git: Option<PathBuf>,
     /// dsh 兼容 Node 的 bin 目录(注入子进程 PATH);None = 未找到。
     pub dsh_node_dir: Option<PathBuf>,
+    /// 普通模式的 packaged CLI 入口;None = 使用开发模式源码入口。
+    pub dsh_cli_entry: Option<PathBuf>,
+    /// packaged CLI 的工作目录;None = 使用开发模式 repo_path。
+    pub dsh_harness_root: Option<PathBuf>,
 }
 
 /// Tauri resources 中的正式 Harness 根目录名。
@@ -286,6 +290,8 @@ impl Tools {
             pnpm: None,
             git: None,
             dsh_node_dir: None,
+            dsh_cli_entry: None,
+            dsh_harness_root: None,
         }
     }
 }
@@ -676,8 +682,8 @@ fn packaged_runtime_from_manifest(
     let dsh_home = PathBuf::from(&manifest.dsh_home);
     Ok(PackagedRuntime {
         manifest,
-        harness_root,
-        cli_entry,
+        harness_root: harness_root.clone(),
+        cli_entry: cli_entry.clone(),
         node_binary: node_binary.clone(),
         pnpm_binary: pnpm_binary.clone(),
         dsh_home,
@@ -685,6 +691,8 @@ fn packaged_runtime_from_manifest(
             pnpm: Some(pnpm_binary),
             git: None,
             dsh_node_dir: node_binary.parent().map(Path::to_path_buf),
+            dsh_cli_entry: Some(cli_entry.clone()),
+            dsh_harness_root: Some(harness_root.clone()),
         },
     })
 }
@@ -835,6 +843,8 @@ fn provision_bundle(
         .or_else(|| resolve_executable("pnpm"))
         .ok_or_else(|| OperationError::Failed("未找到 pnpm,无法安装正式依赖".into()))?;
     tools.pnpm = Some(pnpm_binary.clone());
+    tools.dsh_cli_entry = Some(harness_root.join("apps/cli/lib/bin.js"));
+    tools.dsh_harness_root = Some(harness_root.clone());
 
     let dsh_home = managed_dsh_home();
     std::fs::create_dir_all(&dsh_home).map_err(|e| {
@@ -1253,6 +1263,8 @@ fn tools_now() -> Tools {
         pnpm: resolve_executable("pnpm"),
         git: resolve_executable("git"),
         dsh_node_dir: resolve_dsh_node().and_then(|(b, _)| b.parent().map(PathBuf::from)),
+        dsh_cli_entry: None,
+        dsh_harness_root: None,
     }
 }
 

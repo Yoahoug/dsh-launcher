@@ -1077,6 +1077,8 @@ mod tests {
             pnpm: Some(base.join("pnpm/pnpm")),
             git: None,
             dsh_node_dir: Some(base.clone()),
+            dsh_cli_entry: None,
+            dsh_harness_root: None,
         };
         let (_, command) = build_packaged_web_cmd(
             &node,

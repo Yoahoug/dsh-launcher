@@ -326,6 +326,8 @@ mod tests {
             pnpm: None,
             git: None,
             dsh_node_dir: None,
+            dsh_cli_entry: None,
+            dsh_harness_root: None,
         };
         let env = registry_env(&tools);
         assert_eq!(

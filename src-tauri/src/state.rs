@@ -1606,6 +1606,10 @@ impl AppState {
         if let Some(p) = pnpm {
             tools.pnpm = Some(p);
         }
+        // 重新解析工具链通常发生在开发/源码流程，清除上一轮普通模式的
+        // packaged CLI，避免开发操作误调用安装包内入口。
+        tools.dsh_cli_entry = None;
+        tools.dsh_harness_root = None;
         // 工具链可能已变化 → 环境缓存失效
         self.invalidate_env_cache();
     }
@@ -1619,6 +1623,12 @@ impl AppState {
         }
         if packaged.dsh_node_dir.is_some() {
             tools.dsh_node_dir = packaged.dsh_node_dir.clone();
+        }
+        if packaged.dsh_cli_entry.is_some() {
+            tools.dsh_cli_entry = packaged.dsh_cli_entry.clone();
+        }
+        if packaged.dsh_harness_root.is_some() {
+            tools.dsh_harness_root = packaged.dsh_harness_root.clone();
         }
         self.invalidate_env_cache();
     }
@@ -1925,10 +1935,17 @@ mod tests {
             pnpm: Some(PathBuf::from("/managed/pnpm")),
             git: None,
             dsh_node_dir: Some(PathBuf::from("/managed/node")),
+            dsh_cli_entry: Some(PathBuf::from("/managed/bin.js")),
+            dsh_harness_root: Some(PathBuf::from("/managed/harness")),
         });
         let tools = st.tools.lock().unwrap().clone();
         assert_eq!(tools.pnpm, Some(PathBuf::from("/managed/pnpm")));
         assert_eq!(tools.dsh_node_dir, Some(PathBuf::from("/managed/node")));
+        assert_eq!(tools.dsh_cli_entry, Some(PathBuf::from("/managed/bin.js")));
+        assert_eq!(
+            tools.dsh_harness_root,
+            Some(PathBuf::from("/managed/harness"))
+        );
         assert!(tools.git.is_none(), "packaged 工具不应覆盖已有 Git 状态");
     }
 
@@ -1950,6 +1967,8 @@ mod tests {
                 pnpm: None,
                 git: None,
                 dsh_node_dir: None,
+                dsh_cli_entry: None,
+                dsh_harness_root: None,
             },
             OperationCoordinator::new(
                 Arc::new(LogHub::new(

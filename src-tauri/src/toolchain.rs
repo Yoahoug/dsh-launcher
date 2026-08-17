@@ -297,6 +297,8 @@ fn install_component(
             pnpm: Some(bin.clone()),
             git: None,
             dsh_node_dir: node_dir,
+            dsh_cli_entry: None,
+            dsh_harness_root: None,
         };
         t.env()
     };
@@ -615,6 +617,8 @@ pub fn current_git(tools: &Tools) -> ToolRuntime {
             pnpm: None,
             git: Some(bin.clone()),
             dsh_node_dir: node_dir,
+            dsh_cli_entry: None,
+            dsh_harness_root: None,
         };
         t.env()
     };

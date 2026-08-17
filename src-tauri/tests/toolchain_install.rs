@@ -33,6 +33,8 @@ fn install_missing_managed_toolchain_from_mirror() {
         pnpm: None,
         git: None,
         dsh_node_dir: None,
+        dsh_cli_entry: None,
+        dsh_harness_root: None,
     };
     let report = toolchain::ensure_tool(
         &hub,
@@ -57,6 +59,8 @@ fn install_missing_managed_toolchain_from_mirror() {
         pnpm: None,
         git: None,
         dsh_node_dir: bin.parent().map(|p| p.to_path_buf()),
+        dsh_cli_entry: None,
+        dsh_harness_root: None,
     };
     let report2 = toolchain::ensure_tool(
         &hub,
