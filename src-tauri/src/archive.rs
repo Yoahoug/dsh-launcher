@@ -146,6 +146,12 @@ pub fn extract_tar_gz(
     dest: &Path,
     token: &CancellationToken,
 ) -> Result<(), OperationError> {
+    // Some valid archives begin with a `./` directory entry. Create the
+    // extraction root first so that entry handling does not depend on the
+    // archive containing a usable parent directory entry.
+    std::fs::create_dir_all(dest).map_err(|e| {
+        OperationError::Failed(format!("创建解压目录失败:{} ({})", dest.display(), e))
+    })?;
     let file = std::fs::File::open(tar_path)
         .map_err(|e| OperationError::Failed(format!("打开 tar.gz 失败:{e}")))?;
     let gz = flate2::read::GzDecoder::new(file);
@@ -330,7 +336,9 @@ mod tests {
                 .unwrap();
             w.finish().unwrap();
         }
-        let dest = temp_dir("tar-out");
+        // The runtime bundle starts with `./`; the extractor must create a
+        // missing destination before processing that entry.
+        let dest = base.join("tar-out-missing");
         extract_tar_gz(&tar_path, &dest, &CancellationToken::new()).unwrap();
         assert_eq!(
             std::fs::read(dest.join("node-v24/x/bin/node")).unwrap(),
