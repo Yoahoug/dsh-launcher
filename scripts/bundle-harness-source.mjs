@@ -78,6 +78,16 @@ function copyPackage(sourceRoot, relativeRoot, outputRoot) {
     const candidate = join(source, name)
     if (existsSync(candidate)) copyTree(candidate, join(target, name), { excludeMaps: name === 'dist' })
   }
+  // Some production packages publish runtime files beside lib/, notably the
+  // Cordis patch used by DSH profile bundles. Copy only exact package `files`
+  // entries and the known patch file; never include sources, tests, or docs.
+  for (const file of Array.isArray(manifest.files) ? manifest.files : []) {
+    if (typeof file !== 'string' || file.startsWith('!') || file.includes('*') || file.includes('..')) continue
+    const candidate = join(source, file)
+    if (existsSync(candidate) && statSync(candidate).isFile()) copyFile(candidate, join(target, file))
+  }
+  const patch = join(source, 'cordis.patch.yml')
+  if (existsSync(patch)) copyFile(patch, join(target, 'cordis.patch.yml'))
   const bins = typeof manifest.bin === 'string'
     ? [manifest.bin]
     : Object.values(manifest.bin ?? {})

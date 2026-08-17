@@ -150,8 +150,12 @@ pub struct Managed {
     pub url: Option<String>,
     /// 进程已退出(reader 线程置位)。
     pub exited: Arc<AtomicBool>,
+    /// 子进程退出码；等待线程在置位 exited 前写入。
+    pub exit_code: Arc<Mutex<Option<i32>>>,
     /// 就绪信号(reader 线程置位)。
     pub ready: Arc<Mutex<Option<String>>>,
+    /// stdout/stderr 最近输出，用于启动失败诊断。
+    pub output_tail: Arc<Mutex<Vec<String>>>,
     #[cfg(windows)]
     pub job: windows_sys::Win32::Foundation::HANDLE,
 }
@@ -165,7 +169,9 @@ impl Managed {
         pid: u32,
         label: &'static str,
         exited: Arc<AtomicBool>,
+        exit_code: Arc<Mutex<Option<i32>>>,
         ready: Arc<Mutex<Option<String>>>,
+        output_tail: Arc<Mutex<Vec<String>>>,
         #[cfg(windows)] job: windows_sys::Win32::Foundation::HANDLE,
     ) -> Self {
         Self {
@@ -175,7 +181,9 @@ impl Managed {
             ready_at: None,
             url: None,
             exited,
+            exit_code,
             ready,
+            output_tail,
             #[cfg(windows)]
             job,
         }
@@ -298,6 +306,7 @@ impl Supervisor {
             .map_err(|e| format!("无法启动 {label_desc}:{e}"))?;
         let pid = child.id();
         let exited = Arc::new(AtomicBool::new(false));
+        let exit_code = Arc::new(Mutex::new(None));
         let ready = Arc::new(Mutex::new(None));
 
         #[cfg(windows)]
@@ -386,15 +395,20 @@ impl Supervisor {
 
         // 等待子进程退出(监视线程,退出时置位)
         let exited_flag2 = exited.clone();
+        let exit_code2 = exit_code.clone();
         let log2 = self.log.clone();
         std::thread::spawn(move || {
             let status = child.wait();
             match status {
-                Ok(s) => log2.append(
-                    label,
-                    LogLevel::Info,
-                    &format!("进程退出 code={}", s.code().unwrap_or(-1)),
-                ),
+                Ok(s) => {
+                    let code = s.code();
+                    *exit_code2.lock().unwrap() = code;
+                    log2.append(
+                        label,
+                        LogLevel::Info,
+                        &format!("进程退出 code={}", code.unwrap_or(-1)),
+                    );
+                }
                 Err(e) => log2.append(label, LogLevel::Err, &format!("wait 失败:{e}")),
             }
             for t in threads {
@@ -407,7 +421,9 @@ impl Supervisor {
             pid,
             label,
             exited,
+            exit_code,
             ready,
+            tail,
             #[cfg(windows)]
             job,
         ));
@@ -450,6 +466,7 @@ impl Supervisor {
             .map_err(|e| format!("无法启动 pnpm run dev:web:{e}"))?;
         let pid = child.id();
         let exited = Arc::new(AtomicBool::new(false));
+        let exit_code = Arc::new(Mutex::new(None));
         let ready = Arc::new(Mutex::new(None));
         #[cfg(windows)]
         let job = crate::services::supervisor::win::create_job(&child);
@@ -523,7 +540,9 @@ impl Supervisor {
             pid,
             label,
             exited,
+            exit_code,
             ready,
+            Arc::new(Mutex::new(Vec::new())),
             #[cfg(windows)]
             job,
         ));
@@ -550,21 +569,23 @@ impl Supervisor {
                 return Err("cancelled".into());
             }
             // 早退检测
-            let (exited, ready) = {
+            let (exited, ready, exit_code, output_tail) = {
                 let web = self.web.lock().unwrap();
                 match web.as_ref().filter(|m| m.pid == pid) {
-                    Some(m) => (
-                        m.exited.load(Ordering::SeqCst),
-                        m.ready.lock().unwrap().clone(),
-                    ),
-                    None => (false, None),
+                    Some(m) => {
+                        let output_tail = m.output_tail.lock().unwrap().clone();
+                        (
+                            m.exited.load(Ordering::SeqCst),
+                            m.ready.lock().unwrap().clone(),
+                            *m.exit_code.lock().unwrap(),
+                            output_tail,
+                        )
+                    }
+                    None => (false, None, None, Vec::new()),
                 }
             };
             if exited {
-                return Err(format!(
-                    "dsh web 进程提前退出({}s 内未见就绪行);若前端 dist 未构建,请先「更新并构建」",
-                    timeout_ms / 1000
-                ));
+                return Err(early_exit_diagnostic(exit_code, &output_tail));
             }
             if let Some(url) = ready {
                 // 端口确认:URL 端口可连接才算就绪
@@ -711,9 +732,11 @@ impl Supervisor {
             pid,
             "dsh web",
             Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(None)),
             Arc::new(Mutex::new(
                 v.get("webUrl").and_then(|u| u.as_str()).map(String::from),
             )),
+            Arc::new(Mutex::new(Vec::new())),
             #[cfg(windows)]
             windows_sys::Win32::Foundation::HANDLE::default(),
         );
@@ -722,6 +745,27 @@ impl Supervisor {
         m.url = v.get("webUrl").and_then(|x| x.as_str()).map(String::from);
         self.web.lock().unwrap().replace(m);
         self.web.lock().unwrap().clone()
+    }
+}
+
+fn early_exit_diagnostic(exit_code: Option<i32>, output_tail: &[String]) -> String {
+    let code = exit_code
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "unknown".into());
+    let tail = output_tail
+        .iter()
+        .rev()
+        .take(12)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n");
+    if tail.is_empty() {
+        format!("dsh web 进程提前退出(code={code});未出现就绪行")
+    } else {
+        format!("dsh web 进程提前退出(code={code});启动输出尾部:\n{tail}")
     }
 }
 
@@ -1070,5 +1114,13 @@ mod tests {
         assert_eq!(env("DSH_NO_AUTOOPEN"), Some("1".into()));
         assert_eq!(command.get_current_dir(), Some(harness.as_path()));
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn early_exit_diagnostic_reports_exit_code_and_output_without_timeout() {
+        let error = early_exit_diagnostic(Some(1), &["Error: missing cordis.patch.yml".into()]);
+        assert!(error.contains("code=1"));
+        assert!(error.contains("cordis.patch.yml"));
+        assert!(!error.contains("120s"));
     }
 }

@@ -302,12 +302,14 @@ fn harness_versions_dir() -> PathBuf {
     state_dir().join("harness-versions")
 }
 
-fn required_bundle_files() -> [&'static str; 6] {
+fn required_bundle_files() -> [&'static str; 8] {
     [
         "apps/cli/lib/bin.js",
         "apps/cli/package.json",
         "apps/web/dist/index.html",
         "apps/web/package.json",
+        "packages/bundle/base/cordis.patch.yml",
+        "packages/bundle/web-app/cordis.patch.yml",
         "package.json",
         "pnpm-lock.yaml",
     ]
